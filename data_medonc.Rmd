@@ -1,0 +1,1008 @@
+---
+title: "Makroanalyse medicinpriser"
+author: "Lars Børty"
+date: "14/9/2019"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float:
+      collapsed: no
+---
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(readxl)
+library(haven)
+library(lubridate)
+library(magrittr)
+library(patchwork)
+library(ggthemes)
+library(survival)
+library(survminer)
+library(ccostr)
+library(kableExtra)
+library(xtable)
+library(ggrepel)
+library(stargazer)
+library(scales)
+library(RColorBrewer)
+
+th <- theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+th2 <- theme_minimal() + 
+  theme(panel.grid.major.y = element_blank(), panel.grid.minor = element_blank())
+
+th1 <- theme_minimal() + 
+  theme(panel.grid.major.x = element_blank(), panel.grid.minor = element_blank())
+
+th3 <- theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+             panel.background = element_rect(fill = NA,colour = NA))
+
+pal4 <- colorRampPalette(brewer.pal(4, "Paired"))
+palblue <- colorRampPalette(brewer.pal(3, "Paired"))
+bpal <- colorRampPalette(RColorBrewer::brewer.pal(4,"Blues"))
+pal1 <- ggthemes_data[["tableau"]][["color-palettes"]][["regular"]]$`Classic 10`
+pal2 <- ggthemes_data[["tableau"]][["color-palettes"]][["regular"]]$`Classic 20`
+base1 <- brewer.pal(4, "Paired")[1]
+base2 <- brewer.pal(4, "Paired")[2]
+
+load("Z:/lars_speciale/generated_data/ppmg_yr.rdata")
+load("Z:/lars_speciale/generated_data/ppmg_mo.rdata")
+load("Z:/lars_speciale/generated_data/atc_lookup.rdata")
+load("Z:/lars_speciale/generated_data/age2.rdata")
+load("Z:/lars_speciale/generated_data/diag2.rdata")
+load("Z:/lars_speciale/generated_data/mss2.rdata")
+load("Z:/lars_speciale/generated_data/mssg2.rdata")
+load("Z:/lars_speciale/generated_data/pharm.rdata")
+load("Z:/lars_speciale/generated_data/NORD.rdata")
+```
+
+
+```{r fig.height=3.5, fig.width=14}
+mo0 <- mss %>% 
+  mutate(date=as.Date(paste0(substr(date,1,7),"-01"))) %>% 
+  group_by(date) %>% 
+  summarize(sum=sum(med_price)) %>% 
+  full_join(ppmg_mo, by="date") %>%
+  gather(variable, value, -date) %>% 
+  mutate(ye=year(date), mo=month(date,label=T)) %>% 
+  {ggplot() + 
+  geom_col(data = filter(., variable == "cost"), aes(mo, value/1e6), fill="#a6cee3", width=0.8) + 
+  geom_col(data = filter(., variable == "sum"), aes(mo, value/1e6), width=0.2, fill="black") + 
+      facet_wrap(~ye, nrow=3, scales="free_x")+
+  labs(title=NULL, x=NULL, y=NULL) + 
+  th + theme(axis.text.x=element_text(size=9))}
+mo0
+ggsave(mo0,  file="plots/mo0.pdf",  height = 3.5, width=13, dpi=600)
+```
+
+```{r fig.height=8, fig.width=14}
+a <- atc_lookup %>% 
+  filter(atc_code %in% ppmg_yr$atc_code) %>% 
+  group_by(atc_code) %>% 
+  summarize(n=n()) %>% 
+  filter(n>1)
+
+name <- pharm %>% 
+  filter(atc_code %in% ppmg_yr$atc_code) %>% 
+  distinct(atc_code, generic_name)
+
+emp <- mss %>% 
+  group_by(year, atc_code) %>% 
+  summarize(sum=sum(med_price)) %>% 
+  full_join(ppmg_yr %>% filter(atc_code != "fee_injmix"),
+                               #atc_code != "L01BC59"), 
+            by=c("year","atc_code")) %>%
+  left_join(name, by="atc_code") %>% 
+  mutate(atc_code_name = paste0(generic_name, "\n",atc_code)) %>% 
+  select(-ppmg, -generic_name) %>% 
+  gather(variable, value, -year, -atc_code, -atc_code_name) %>% 
+  ungroup() %>% 
+  mutate(year = substr(year,3,5)) %>% 
+  mutate(atc_code_name = if_else(atc_code %in% a$atc_code, paste(atc_code_name, "*"), atc_code_name)) %>% 
+  mutate(atc_code_name = if_else(atc_code %in% c("L02BA01","L02BG03","L02BG04","L02BG06"), paste(atc_code_name, expression("\u2020")),atc_code_name)) %>% 
+  mutate(atc_code_name = if_else(atc_code %in% c("L02AE02"), paste(atc_code_name, expression("\u2021")),atc_code_name))
+
+emp %>% 
+  pivot_wider(names_from=variable, values_from=value) %>% 
+  mutate(diff=cost-sum) %>% 
+  group_by(diff>0) %>% 
+  summarize(sum(abs(diff))/1e6)
+
+mo1 <- ggplot() + 
+  geom_col(data = filter(emp, variable == "cost"), aes(as.factor(year), value/1e6), fill="#a6cee3", width=0.8) + 
+  geom_col(data = filter(emp, variable == "sum"), aes(as.factor(year), value/1e6), width=0.2, fill="black") + 
+  facet_wrap(~atc_code_name, scales="free_y", ncol=6) + 
+  labs(title=NULL, x=NULL, y=NULL) + 
+  th
+mo1
+ggsave(mo1,  file="plots/mo1.pdf",  height = 12, width=13, dpi=600)
+```
+
+
+
+
+
+
+
+```{r fig.height=4, fig.width=10}
+mss %>% 
+  group_by(IDNr, grp) %>% 
+  summarize(sprice = sum(med_price, na.rm=T)) %>% 
+  group_by(grp) %>% 
+  mutate(med = round(median(sprice))) %>% 
+  ggplot(aes(reorder(grp,sprice,FUN = median), sprice/1e3)) + 
+  geom_violin(width=1.3, color="grey30", fill="grey40", alpha=0.6, size=0.3, ) +
+  geom_boxplot(outlier.shape = NA, width=0.08, size=0.3) +
+  geom_text(aes(label=med, y=0.1), check_overlap = T, size=3) +
+  scale_y_log10(limits=c(0.1,10000),breaks=c(1,5,10,50,100,500,1000), label = unit_format(unit = "k", sep = "", accuracy =1)) + 
+  labs(x=NULL, y="DKK") + th1+ 
+  coord_cartesian(ylim=c(0.148,5000))
+
+extra <- mssg %>% 
+  group_by(grp) %>% 
+  mutate(me = median(med_price, na.rm=T),
+         mn = mean(med_price, na.rm=T))
+
+mo2 <- mss %>% 
+  group_by(IDNr, grp, year) %>% 
+  summarize(sprice = sum(med_price, na.rm=T)) %>% 
+  ungroup() %>% 
+  mutate(grp = factor(grp,levels=rev(c("Breast","Brain","Ovary","Colon","Rectum","Lung","Other","Stomach","Prostate","Pancreas")))) %>% 
+  mutate(grp2 = case_when(year%in% c(2008, 2009)~"08/09",
+                          year%in% c(2017, 2018)~"17/18",)) %>% 
+  filter(!is.na(grp2)) %>% 
+  ggplot(aes(grp, sprice/1e3, fill=grp2, color=grp2)) + 
+  geom_violin(width=1.2, alpha=0.3, size=0.3, position="identity", trim = F) +
+  scale_fill_brewer("Violin",palette="Paired",labels=c("2008-2009","2017-2018")) +
+  scale_color_brewer("Violin",palette="Paired",labels=c("2008-2009","2017-2018")) +
+  ggnewscale::new_scale("fill") +
+  geom_boxplot(data=extra, aes(y=med_price/1e3, x=grp, fill="White"),inherit.aes = F,outlier.shape = NA, width=0.06, size=0.3, color="black") +
+  scale_fill_manual("Boxplot", values = "white", labels="2008-2019") +
+  geom_text(data=extra, aes(label=format(round(mn),big.mark = "."), y=6000, x=grp),inherit.aes = F, check_overlap = T, size=3, color="black") +
+  #geom_text(data=extra, aes(label=format(round(mn),big.mark = "."), y=0.06, x=grp),inherit.aes = F, check_overlap = T, size=3, color="black", hjust="center") +
+  scale_y_log10(limits=c(0.06,10000),breaks=c(1,5,10,50,100,500,1000), label = unit_format(unit = "k", sep = "", accuracy =1)) + 
+  scale_x_discrete(position = "top")+
+  labs(x=NULL, y="DKK") + th1+ 
+  coord_cartesian(ylim=c(0.18,4200))
+mo2
+ggsave(mo2,  file="plots/mo2.pdf",  height = 4, width=10, dpi=600)
+```
+
+
+
+
+
+
+
+
+
+```{r fig.height=3, fig.width=10}
+p1 <- mss %>% 
+  ggplot(aes(med_price)) + 
+  geom_histogram(bins=200) + 
+  scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+              labels = trans_format("log10", math_format(10^.x))) +
+  facet_wrap(~"Cost of treatment\nn = 274.894") +
+  labs(x="DKK", y="Count") + th
+
+p2 <- mss %>% 
+  group_by(IDNr) %>% 
+  summarize(p=sum(med_price)) %>% 
+  ggplot(aes(p)) + 
+  geom_histogram(bins=200) + 
+  scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+              labels = trans_format("log10", math_format(10^.x))) +
+  facet_wrap(~"Cost of patients\nn = 13.331") +
+  labs(y=NULL,x="DKK") + th
+mo14 <- p1+p2
+mo14
+ggsave(mo14, file="plots/mo14.pdf", height = 4, width=10, dpi=600)
+```
+
+```{r fig.height=4, fig.width=10}
+p1 <- mss %>% 
+  group_by(IDNr) %>% 
+  count() %>% 
+  ggplot(aes(n)) +
+  geom_bar(width=0.7) + scale_x_continuous(limits=c(0,101), breaks=c(1,25,50,75,100)) +
+  facet_wrap(~"Patients with treatments < 100") + 
+  labs(x=NULL, y=NULL) + th + 
+  annotate(geom = "text",  x = 5.5, y = 960, label = "9",hjust = "right", size=3.5) + 
+  annotate(geom = "curve", x = 6, y = 960, xend = 8, yend = 900, curvature = -.3) +
+  annotate(geom = "text",  x = 15.5, y = 960, label = "12",hjust = "left", size=3.5) + 
+  annotate(geom = "curve", x = 15, y = 960, xend = 13, yend = 900, curvature = .3) +
+  annotate(geom = "text",  x = 27.5, y = 410, label = "24",hjust = "left", size=3.5) + 
+  annotate(geom = "curve", x = 27, y = 410, xend = 25, yend = 350, curvature = .3)
+
+p2 <- mss %>% 
+  group_by(IDNr) %>% 
+  count() %>% 
+  filter(n>100) %>% 
+  arrange(n) %>% 
+  mutate(n2 = cut(n,breaks = c(100,125,150,200,450))) %>% 
+  ggplot(aes(n2)) +
+  geom_bar(width=0.9) +
+  facet_wrap(~"Patients with treatments > 100") + 
+  labs(x=NULL, y=NULL) + th
+
+p3 <- mss %>% 
+  group_by(year) %>% 
+  summarize(n = length(unique(IDNr))) %>% 
+  ggplot(aes(year,n)) + 
+  geom_col(width=0.9) + 
+    scale_x_continuous(breaks=seq(2009,2018,3)) +
+  facet_wrap(~"Unique patients") + labs(x=NULL, y=NULL) + th
+
+p4 <- mss %>% 
+  group_by(year) %>% 
+  summarize(n = length(unique(atc_code))) %>% 
+  ggplot(aes(year,n)) + 
+  geom_col(width=0.9) + 
+    scale_x_continuous(breaks=seq(2009,2018,3)) +
+  facet_wrap(~"Unique ATC codes") + labs(x=NULL, y=NULL) + th
+
+p5 <- mss %>% 
+  group_by(year) %>% 
+  summarize(n=n()) %>% 
+  ggplot(aes(year,n)) + 
+  geom_col(width=0.9) + 
+    scale_x_continuous(breaks=seq(2009,2018,3)) +
+  facet_wrap(~"Number of treatments") + labs(x=NULL, y=NULL) + th
+
+mo16 <- p1 + p2 + p5 + p3 + p4 + plot_layout(design = "AAB\nCDE")
+mo16
+ggsave(mo16, file="plots/mo16.pdf", height = 4, width=10, dpi=600)
+```
+
+```{r fig.height=4, fig.width=10}
+p1 <- mssg %>% group_by(age) %>% summarize(n=n()) %>% ggplot(aes(age, n)) + geom_col(width=0.8) + labs(x=NULL, y=NULL) + facet_wrap(~"Age")+ th
+
+p2 <- mssg %>% filter(!is.na(gender)) %>% mutate(gender=if_else(gender=="M","Male","Female")) %>% 
+  group_by(gender) %>% summarize(n=n()) %>% ggplot(aes(gender, n)) + geom_col() + labs(x=NULL, y=NULL)+ facet_wrap(~"Gender")+ th
+
+p3 <- mssg %>% filter(!is.na(bmi)&bmi<60) %>% mutate(bmi = round(bmi)) %>% 
+  group_by(bmi) %>% summarize(n=n()) %>% ggplot(aes(bmi, n)) + geom_col(width=0.8) + labs(x=NULL, y=NULL)+ facet_wrap(~"BMI") + th
+
+p4 <- mssg %>% group_by(grp) %>% summarize(n=n()) %>% ggplot(aes(reorder(grp,n), n)) + geom_col() + coord_flip() +facet_wrap(~"Diagnose") + th+ labs(x=NULL, y=NULL)
+
+mo20 <- p1 + p2 + p3 + p4+ plot_layout(width=c(1,0.3,0.5),design = "ABD\nCBD")
+mo20
+ggsave(mo20, file="plots/mo20.pdf", height = 4, width=10, dpi=600)
+```
+
+
+
+```{r fig.height=4, fig.width=10}
+a <- mss %>% 
+  filter(!is.na(med_price)) %>% 
+  filter(year %in% c(2018,2019)) %>% 
+  mutate(aaa = round(as.numeric(difftime(date, birth_date, units = "days")/365.25))) %>% 
+  group_by(atc_code) %>% 
+  summarize(mm = weighted.mean(aaa, w = med_price, na.rm = T))
+
+b <- ppmg_yr %>% 
+  filter(year %in% c(2018,2019)) %>% 
+  group_by(atc_code) %>% 
+  summarize(total=sum(cost))
+
+c <- mss %>% 
+  filter(!is.na(med_price)) %>% 
+  filter(year %in% c(2018,2019)) %>% 
+  group_by(atc_code, IDNr) %>% 
+  summarize(ss = sum(med_price, na.rm=T)) %>% 
+  group_by(atc_code) %>% 
+  summarize(mean_cost = mean(ss))
+
+res <- a %>% 
+  left_join(b) %>% 
+  left_join(c) %>% 
+  left_join(name) %>% 
+  mutate(mean_cost=mean_cost/1e3)
+
+mo21 <- res %>% ggplot(aes(mm, mean_cost, size=total/1e6)) + 
+  geom_point() + 
+  scale_size_continuous(breaks=c(1,5,15,30), label=function(x) paste0(x,"m"),range = c(0, 12)) +
+  scale_y_continuous(breaks=seq(0,500,100), label=function(x) paste0(x,"k"))+
+  geom_text_repel(data=subset(res, total>5000000),
+                  aes(mm, mean_cost,label=generic_name), 
+                  inherit.aes = F, box.padding = 0.9, seed=2, size=4)+ 
+  th3 + labs(x="Mean age weighted by cost", y="mean cost per patient", size="Total cost\nwithin period\nin DKK") + 
+  theme(legend.key = element_rect(fill=NA))
+mo21
+ggsave(mo21, file="plots/mo21.pdf", height = 4, width=10, dpi=600)
+```
+
+
+
+```{r fig.height=4, fig.width=10}
+p1 <- mss %>% 
+  filter(!is.na(med_price)) %>% 
+  mutate(aaa = round(as.numeric(difftime(date, birth_date, units = "days")/365.25))) %>% 
+  group_by(year, grp) %>% 
+  summarize(mm = weighted.mean(aaa, w = med_price, na.rm = T)) %>% 
+  ggplot(aes(year, mm)) + geom_point() + 
+  geom_smooth(method = "lm", color=base2) + 
+  scale_x_continuous(breaks=seq(2009,2019,3), labels = function(x) substr(x,3,4)) +
+  scale_color_manual(values=palblue(10)) + facet_wrap(~grp, scales="free",nrow=2) + th + 
+  labs(y="Mean age weighted by cost", x=NULL)
+
+p2 <- mss %>% 
+  filter(!is.na(med_price)) %>% 
+  mutate(aaa = round(as.numeric(difftime(date, birth_date, units = "days")/365.25))) %>% 
+  group_by(year) %>% 
+  summarize("Weighted" = weighted.mean(aaa, w = med_price, na.rm = T),
+            "Unweighted" = mean(aaa, na.rm=T)) %>% 
+  gather(variable, value, -year) %>% 
+  ggplot(aes(year, value, color=variable)) + 
+  geom_line(method = "lm") + 
+  scale_color_brewer(palette="Paired")+
+  scale_x_continuous(breaks=seq(2008,2019,2)) + th + facet_wrap(~"Mean age all diagnoses") + 
+  labs(x=NULL, y=NULL, color=NULL) + 
+  theme(legend.position = c(0.25,0.90), legend.background = element_rect(fill=NA), legend.key = element_rect(fill="NA"))
+
+mo22 <- p1 + p2 + plot_layout(width=c(2,1))
+mo22
+ggsave(mo22, file="plots/mo22.pdf", height = 4, width=10, dpi=600)
+```
+
+
+
+```{r fig.height=4, fig.width=10}
+p1 <- mss %>% 
+  filter(!is.na(form)) %>% 
+  group_by(datey, form) %>% 
+  summarize(n = n()) %>% 
+  mutate(form = case_when(form == "inj" ~ "Form: Injection",
+                          form == "mus" ~ "Form: Muscular",
+                          form == "sub" ~ "Form: Subcutaneous",
+                          form == "tab" ~ "Form: Tablets",)) %>% 
+  ggplot(aes(datey,n)) + 
+  geom_col() + 
+  facet_wrap(~form, scales = "free_y", nrow=2) + 
+    scale_x_date(date_breaks = "3 year", date_labels = "%Y") +
+  labs(x=NULL, y=NULL) + th
+
+p2 <- mss %>% group_by(regimen) %>% summarize(n=n()) %>% top_n(25, wt=n) %>% 
+  ggplot(aes(reorder(regimen,n),n)) + geom_col() + coord_flip()  +
+  labs(x=NULL, y=NULL) + th + facet_wrap(~"Top 25 regimens")
+
+p3 <- mss %>% group_by(regimen_category) %>% summarize(n=n()) %>% 
+  filter(!is.na(regimen_category)) %>% 
+  mutate(regimen_category = recode(regimen_category, 
+                                   `neoadjuvant/adjuvant/met` = "neoadj/adj/met",
+                                   `metastatic/advanced` = "metastatic/adv")) %>% 
+  ggplot(aes(reorder(regimen_category,n),n)) + geom_col() + coord_flip()  +
+  labs(x=NULL, y=NULL) + th + facet_wrap(~"Regimen intent")
+
+
+mo17 <- p1 + p2 + p3 + plot_layout(design = "AB\nCB", widths = c(2,1), heights = c(2,1))
+mo17
+
+ggsave(mo17, file="plots/mo17.pdf", height = 4, width=10, dpi=600)
+
+```
+
+```{r fig.height=4, fig.width=10}
+mo4 <- mss %>% 
+  group_by(datey, IDNr) %>% 
+  summarise_all(first) %>% 
+  group_by(datey, grp) %>% 
+  count() %>% 
+  ggplot(aes(datey, n)) + 
+  geom_col() + 
+  facet_wrap(~grp, scales="free", nrow=2) + 
+    scale_x_date(breaks = "3 years",date_labels = "%y") +
+  labs(x=NULL, y=NULL) +
+  th
+
+mo4
+ggsave(mo4,  file="plots/mo4.pdf",  height = 4, width=12, dpi=600)
+```
+
+
+
+```{r fig.height=6, fig.width=12}
+a <- mss %>% 
+  filter(!is.na(med_price)) %>% 
+  mutate(aaa = round(as.numeric(difftime(date, birth_date, units = "days")/365.25))) %>% 
+  group_by(grp) %>% 
+  summarize(mm = weighted.mean(aaa, w = med_price, na.rm = T))
+
+p1 <- mss %>% 
+  mutate(aaa = round(as.numeric(difftime(date, birth_date, units = "days")/365.25))) %>% 
+  left_join(a, by="grp") %>% 
+  mutate(grp=paste0(grp,": ",round(mm,1))) %>% 
+  group_by(aaa, grp,mm) %>% 
+  summarize(sm = sum(med_price, na.rm=T)) %>% 
+  ggplot(aes(aaa,sm/1e6)) + 
+  geom_col(width = 1, color="grey30", fill="grey30") + 
+  geom_vline(aes(xintercept=mm), color=base2, size=1) + 
+  scale_x_continuous(breaks = seq(20,100, by=10)) + 
+  facet_wrap(~reorder(grp,mm), scales = "free_y", nrow=5) + 
+  scale_y_continuous(label = unit_format(unit = "m", sep = "", accuracy =0.1)) +
+  labs(title=NULL, x="Age",y=NULL) + th
+
+p2 <- mss %>% 
+  mutate(aaa = round(as.numeric(difftime(date, birth_date, units = "days")/365.25))) %>% 
+  left_join(a, by="grp") %>% 
+  group_by(aaa) %>% 
+  summarize(sm = sum(med_price, na.rm=T)) %>% 
+  ggplot(aes(aaa,sm/1e6)) + 
+  geom_col(width = 1, color="grey30", fill="grey30") + 
+  geom_vline(aes(xintercept=weighted.mean(aaa,w = sm, na.rm = T)), color=base2, size=1) + 
+  scale_x_continuous(breaks = seq(20,100, by=10)) + 
+  scale_y_continuous(label = unit_format(unit = "m", sep = "", accuracy =1)) +
+  facet_wrap(~"Total: 62.4") +
+  labs(title=NULL, x="Age",y="DKK") + th
+
+mo5 <- p2 + p1
+mo5
+ggsave(mo5,  file="plots/mo5.pdf",  height = 5, width=10, dpi=600)
+```
+
+
+
+```{r fig.height=4, fig.width=10}
+names(NORD) <- c(seq(2.5, 82.5, 5),90,"gender")
+MA <- NORD$`90`[1]
+FE <- NORD$`90`[2]
+extra <- tibble("87.5"=c(0.6*MA, 0.6*FE), 
+      "92.5"=c(0.25*MA, 0.25*FE),
+      "97.5"=c(0.10*MA, 0.10*FE),
+      "102.5"=c(0.05*MA, 0.05*FE))
+
+range01 <- function(x,...){(x-min(x,...))/(max(x,...)-min(x,...))}
+
+d2 <- NORD %>% 
+  bind_cols(extra) %>% 
+  gather(variable, value, -gender) %>% 
+  mutate(age=as.numeric(variable)) %>% 
+  mutate(type="inci") %>% 
+  filter(age != 90) %>% 
+  select(gender, age, value, type) %>% 
+  mutate(value = range01(value))
+
+d1 <- mss %>% 
+  filter(!is.na(gender)) %>% 
+  mutate(age = round(as.numeric(difftime(date, birth_date, units = "days")/365.25))) %>% 
+  left_join(a, by="grp") %>% 
+  group_by(age, gender) %>% 
+  summarize(value = sum(med_price, na.rm=T)) %>% 
+  mutate(type="cost") %>% 
+  mutate(gender = if_else(gender=="K","Female","Male")) %>% 
+  select(gender, age, value, type) %>% 
+  ungroup() %>% 
+  mutate(value = range01(value))
+
+p1 <- ggplot(d1, aes(age, value)) + 
+  geom_area(alpha=0.3, fill=base1, color=base2, size=0.3)+
+  geom_line(data=d2, linetype="dashed", size=0.3) + 
+  scale_x_continuous(breaks = seq(0,100, by=20)) + 
+  facet_wrap(~gender, scales="free", nrow=2) + 
+  labs(title=NULL, x=NULL,y=NULL) +
+  th1
+
+d1a <- d1 %>% group_by(age, type) %>% summarize(value=sum(value)) %>% ungroup() %>% mutate(value = range01(value))
+d2a <- d2 %>% group_by(age, type) %>% summarize(value=sum(value)) %>% ungroup() %>% mutate(value = range01(value))
+
+p2 <- ggplot(d1a, aes(age, value)) + 
+  geom_area(alpha=0.3, fill=base1, color=base2, size=0.3)+
+  geom_line(data=d2a, linetype="dashed", size=0.3) + 
+    scale_x_continuous(breaks = seq(0,100, by=5)) + 
+  labs(y=NULL, x=NULL)+
+  facet_wrap(~"Total")+
+  th2
+
+mo18 <- p2 + p1 + plot_layout(nrow=1, width=c(1.6,1))
+mo18
+ggsave(mo18, file="plots/mo18.pdf", height = 4, width=10, dpi=600)
+```
+
+
+
+
+```{r fig.height=4.5, fig.width=12}
+sdata    <- mssg %>% mutate(surv = (surv/365))
+surv.obj <- with(data = sdata, Surv(surv, event))
+fit      <- survfit(surv.obj ~ grp, data = sdata) 
+names(fit$strata) <-substr(names(fit$strata),5,999) 
+pf       <- ggsurvplot(fit)
+
+temp     <- pf$data.survplot %>% group_by(strata) %>% 
+  filter(abs(surv-0.5) == min(abs(surv - 0.5))) %>% 
+  summarize(msurv = first(time))
+
+p <- pf$data.survplot %>% 
+  left_join(temp, by="strata") %>% 
+  ggplot(aes(time, surv, group=strata)) + 
+  geom_line(data=pf$data.survplot %>% rename(gpp =strata), aes(time, surv, group=gpp), color="grey", inherit.aes = F, size=0.3)+
+  geom_ribbon(aes(ymax=upper, ymin=lower), alpha=0.4, fill="grey30") +
+    scale_y_continuous(labels = scales::percent) + 
+  geom_line(color="grey30") + 
+  facet_wrap(~reorder(paste0(strata, " (",round(msurv*12)," months)"),desc(msurv)), nrow=2) + 
+  scale_x_continuous(limits=c(0,10), breaks=seq(0,10,2))+
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) + labs(y=NULL, x="Survival in years")
+
+p2 <- mssg %>% 
+  mutate(event=if_else(event==1, "Dead","Censored")) %>% 
+  filter(surv>0) %>% 
+  ggplot(aes(surv/365*12)) + 
+  scale_x_continuous(breaks=seq(0,144,by=24))+
+  scale_y_continuous(breaks=seq(0,500, 100))+
+  geom_histogram(bins=100) + facet_wrap(~event, nrow=2) +
+  labs(x="Survival in months") + th
+
+mo6 <- p + p2 + plot_layout(width=c(1,0.3))
+mo6
+ggsave(mo6,  file="plots/mo6.pdf",  height = 4.5, width=12, dpi=600)
+```
+
+
+
+
+
+
+
+```{r fig.height=5, fig.width=10}
+gini <- function(x) {
+  n <- length(x)
+  x <- sort(x)
+  res <- 2 * sum(x * 1:n)/(n * sum(x)) - 1 - (1/n)
+  res <- n/(n - 1) * res
+  return(pmax(0, res))
+}
+
+gini_bootstrap <- function(x, n = 1000) {
+  vec <- vector()
+  for(i in 1:n) {
+      ss <- sample(x, replace = T)
+      res <- gini(ss)
+      vec[i] <- res
+  }
+  quantile(vec, probs = c(0.05, 0.95))
+}
+
+mo11 <- mssg %>% 
+  group_by(grp) %>% 
+  arrange(med_price) %>% 
+  mutate(csum = cumsum(med_price)/sum(med_price),
+         n    = row_number(),
+         nmax = n(),
+         coef = gini(med_price),
+         conf = paste0(" [",format(round(gini_bootstrap(med_price)[[1]],2), nsmall = 2), 
+                       ", ", format(round(gini_bootstrap(med_price)[[2]],2), nsmall = 2), "]")) %>%
+  ungroup() %>% 
+  mutate(grp = paste0(grp, "\n",round(coef,3),conf)) %>% 
+  ggplot(aes(n,csum)) + 
+  geom_step() + 
+  geom_ribbon(aes(ymin=0, ymax=csum), alpha=0.4) + 
+  geom_ribbon(aes(ymin=csum, ymax=n/nmax), alpha=0.1) + 
+  facet_wrap(~grp, scales = "free_x", nrow=2) +
+  labs(x = "Patients arranged by cost", y = "Cummulative fraction of costs") +
+  th
+mo11
+ggsave(mo11, file="plots/mo11.pdf", height = 5, width=10, dpi=600)
+#p <- mssg %>% 
+#  group_by(grp) %>% 
+#  arrange(price) %>% 
+#  mutate(coef  = gini(price),
+#         lower = gini_bootstrap(price)[[1]],
+#         upper = gini_bootstrap(price)[[2]]) %>%
+#  ggplot(aes(reorder(grp, coef), coef)) + 
+#  geom_point() + 
+#  geom_errorbar(aes(ymax=upper, ymin=lower)) + 
+#  coord_flip() +
+#  th
+```
+
+
+
+```{r fig.height=5, fig.width=10}
+
+temp <- mss %>% 
+  group_by(IDNr, datey) %>% 
+  summarize(med_price = sum(med_price, na.rm=T)/1e3,
+            grp   = first(grp)) %>% 
+  filter(med_price!=0) %>% 
+  group_by(datey, grp) %>% 
+  arrange(med_price) %>% 
+  summarize(coef = gini(med_price))
+
+p1 <- temp %>% 
+  ggplot(aes(datey, coef, color=grp)) + 
+  geom_line(size=1.1, show.legend = F) +
+  #scale_color_manual(values=pal2$value) +
+  scale_color_manual(values=pal4(10)) +
+  scale_x_date(date_labels = "%Y", breaks = seq(as.Date("2008-01-01"),as.Date("2019-01-01"), by = "1 year")) +
+  geom_text_repel(data=subset(temp, datey == as.Date("2008-01-01")), aes(label = grp, y=coef, x=datey),
+            hjust=1, show.legend = F, direction="y", nudge_x = -30, min.segment.length = 10, size=3.5, force=0.001, seed = 1)+
+  geom_text_repel(data=subset(temp, datey == as.Date("2019-01-01")), aes(label = grp, y=coef, x=datey),
+            hjust=0, show.legend = F, direction="y", nudge_x = 30, min.segment.length = 10, size=3.5, force=0.001, seed = 1)+
+  labs(title=NULL,x=NULL, y="Gini coefficient") + 
+  scale_y_continuous(limits=c(0.25,0.9), breaks=seq(0.3,0.9, 0.1)) +
+  coord_cartesian(xlim=as.Date(c("2007-01-01","2020-01-01"))) + 
+  facet_wrap(~"By year and diagnosis") +
+  th2
+
+p2 <- mss %>% 
+  group_by(IDNr, datey) %>% 
+  filter(grp!="Breast" | datey!="2015-01-01",
+         grp!="Breast" | datey!="2016-01-01") %>% 
+  summarize(med_price = sum(med_price, na.rm=T)/1e3,
+            grp   = first(grp)) %>% 
+  filter(med_price!=0) %>% 
+  group_by(datey) %>% 
+  arrange(med_price) %>% 
+  summarize(coef  = gini(med_price),
+            lower = gini_bootstrap(med_price)[[1]],
+            upper = gini_bootstrap(med_price)[[2]]) %>% 
+  ggplot(aes(datey, coef)) + 
+  geom_smooth(method="lm", color="grey", alpha=0.2, width=0.5) +
+  geom_point(size=1.5) +
+  geom_errorbar(aes(ymin=lower, ymax=upper), width=4) +
+  scale_y_continuous(limits=c(0.25,0.9), breaks=seq(0.3,0.9, 0.1)) +
+  scale_x_date(date_labels = "%Y", breaks = seq(as.Date("2008-01-01"),as.Date("2019-01-01"), by = "2 year")) +
+  labs(title=NULL,x=NULL, y=NULL) + 
+  facet_wrap(~"Total with lm fit") +
+  th1
+
+mo12 <- p1 + p2 + plot_layout(widths = c(2,1))
+mo12
+ggsave(mo12, file="plots/mo12.pdf", height = 5, width=10, dpi=600)
+```
+
+
+
+
+
+```{r fig.height=4, fig.width=12}
+gini_boot <- function(A, B, n = 100) {
+  vec <- vector()
+  for(i in 1:n) {
+      aa <- sample(A, replace = T)
+      bb <- sample(B, replace = T)
+      res <- gini(aa) - gini(bb)
+      vec[i] <- res
+  }
+  vec
+}
+
+p_gini <- function(a,b) {
+  gini_diff <- gini_boot(a, b)
+  gini_diff.under.H0 <- gini_diff - mean(gini_diff)
+  mean(abs(gini_diff.under.H0) > abs(gini_diff))
+}
+
+indx <- 2008:2019
+
+df <- map(indx, 
+          .f = function(x, data = mss) {
+                 d <- data %>% filter(.$year==x) %>% 
+                   group_by(IDNr, grp) %>% 
+                   summarize(med_price = sum(med_price))
+                 d$med_price
+                 }
+          )
+
+result <- array(0, dim = c(12,12))
+resp <- array(NA, dim = c(12,12))
+resg <- array(NA, dim = c(12,12))
+    
+for(i in 1:11){ 
+  for(j in (i+1):12){ 
+    result[i,j] <- p_gini(df[[i]], df[[j]])
+    result[j,i] <- gini(df[[j]]) - gini(df[[i]])
+    resp[j,i] <- p_gini(df[[i]], df[[j]])
+    resg[j,i] <- gini(df[[j]]) - gini(df[[i]])
+  }
+}
+
+res <- as.data.frame(round(resp,3))
+names(res) <- indx
+res$yr <- indx
+resp_f <- res %>% gather(year, value,-yr) %>% filter(!is.na(value))
+
+res <- as.data.frame(round(resg,3))
+names(res) <- indx
+res$yr <- indx
+resg_f <- res %>% gather(year, value,-yr) %>% filter(!is.na(value))
+
+p1 <- full_join(resg_f,resp_f, by=c("year","yr")) %>% 
+  mutate(value.y=cut(value.y, breaks = c(1,0.1,0.05,0.01,0),include.lowest = T)) %>% 
+  mutate(lab = paste0(value.y,"\n",value.x)) %>% 
+  ggplot(aes(year, as.factor(yr), fill=value.y, label=value.x*100)) + 
+  geom_tile() + 
+  scale_fill_manual("P-value",values=rev(bpal(6)[2:6])) +
+  scale_x_discrete(position = "top")  +
+  geom_text(color="white", size=3.5) + 
+  th3 + 
+  labs(x=NULL, y=NULL) + 
+  labs(subtitle="Complete data")
+
+
+df <- map(indx, 
+          .f = function(x, data = mss) {
+                 d <- data %>% filter(.$year==x,
+                                      !(year%in%c(2015,2016,2017)&grp=="Breast")) %>% 
+                   group_by(IDNr, grp) %>% 
+                   summarize(med_price = sum(med_price))
+                 d$med_price
+                 }
+          )
+
+result <- array(0, dim = c(12,12))
+resp <- array(NA, dim = c(12,12))
+resg <- array(NA, dim = c(12,12))
+    
+for(i in 1:11){ 
+  for(j in (i+1):12){ 
+    result[i,j] <- p_gini(df[[i]], df[[j]])
+    result[j,i] <- gini(df[[j]]) - gini(df[[i]])
+    resp[j,i] <- p_gini(df[[i]], df[[j]])
+    resg[j,i] <- gini(df[[j]]) - gini(df[[i]])
+  }
+}
+
+res <- as.data.frame(round(resp,3))
+names(res) <- indx
+res$yr <- indx
+resp_f <- res %>% gather(year, value,-yr) %>% filter(!is.na(value))
+
+res <- as.data.frame(round(resg,3))
+names(res) <- indx
+res$yr <- indx
+resg_f <- res %>% gather(year, value,-yr) %>% filter(!is.na(value))
+
+p2 <- full_join(resg_f,resp_f, by=c("year","yr")) %>% 
+  mutate(value.y=cut(value.y, breaks = c(1,0.1,0.05,0.01,0),include.lowest = T)) %>% 
+  mutate(lab = paste0(value.y,"\n",value.x)) %>% 
+  ggplot(aes(year, as.factor(yr), fill=value.y, label=value.x*100)) + 
+  geom_tile(show.legend = F) + 
+  scale_fill_manual("P-value",values=rev(bpal(6)[2:6])) +
+  scale_x_discrete(position = "top")  +
+  geom_text(color="white", size=3.5) + 
+  th3 + 
+  labs(x=NULL, y=NULL) + 
+  labs(subtitle="Without Breast cancer 15-17 ")
+
+mo3 <- p1 + p2 + plot_layout(guides="collect")
+mo3
+ggsave(mo3,  file="plots/mo3.pdf",  height = 4, width=12, dpi=600)
+```
+
+
+
+
+
+
+
+
+
+
+```{r fig.height=4, fig.width=10}
+diags <- mssg$grp %>% unique()
+
+df1 <- tibble()
+df2 <- tibble()
+df3 <- tibble()
+nl <- 8
+
+for (j in 1:10) {
+  dat <- mss %>% 
+    filter(med_price > 0) %>% 
+  filter(grp==diags[j]) %>% 
+  select(IDNr, surv_day, med_price, event, surv, date) %>%
+  group_by(IDNr) %>% 
+  mutate(date=as.numeric(year(min(date)))) %>% 
+  ungroup %>% 
+  rename(id = IDNr,
+         start = surv_day,
+         cost = med_price,
+         delta = event) %>% 
+  mutate(stop = start) %>% 
+  filter(cost!=0) %>% 
+  filter(!is.na(cost)) %>% 
+  filter(surv>0) %>% 
+  filter(start<surv)
+
+mat1 <- matrix(nrow = nl, ncol = 5)
+mat2 <- matrix(nrow = nl, ncol = 5)
+mat3 <- matrix(nrow = nl, ncol = 5)
+
+for (i in 1:nl) {
+  fit <- ccmean(dat, L=365.25*i)
+  mat1[i,]<- fit$Estimates$ZT
+  mat2[i,]<- fit$Estimates$BT
+  mat3[i,]<- fit$Estimates$CC
+}
+
+temp1 <- mat1 %>% 
+  as_tibble() %>% 
+  mutate(time = 1:nl) %>% 
+  rename(estimate = V1,
+         variance = V2,
+         SE = V3,
+         lcl = V4,
+         ucl = V5) %>% 
+  select(estimate, time, SE) %>% 
+  mutate(diag = diags[j],
+         type= "ZT")
+
+temp2 <- mat2 %>% 
+  as_tibble() %>% 
+  mutate(time = 1:nl) %>% 
+  rename(estimate = V1,
+         variance = V2,
+         SE = V3,
+         lcl = V4,
+         ucl = V5) %>% 
+  select(estimate, time, SE) %>% 
+  mutate(diag = diags[j],
+         type= "BT")
+
+temp3 <- mat3 %>% 
+  as_tibble() %>% 
+  mutate(time = 1:nl) %>% 
+  rename(estimate = V1,
+         variance = V2,
+         SE = V3,
+         lcl = V4,
+         ucl = V5) %>% 
+  select(estimate, time, SE) %>% 
+  mutate(diag = diags[j],
+         type= "CC")
+
+df1 <- bind_rows(df1, temp1)
+df2 <- bind_rows(df2, temp2)
+df3 <- bind_rows(df3, temp3)
+}
+
+df <- bind_rows(df1,df2,df3, temp) %>% 
+  mutate(estimate=estimate/1e3, SE = SE/1e3, time=time/2) %>% 
+  group_by(diag) %>% select(time,estimate,SE,diag,type) %>% 
+  filter(!is.na(diag))
+
+a <- bind_rows(df, data.frame(time=rep(0,20),estimate=rep(0,20),SE=rep(0,20),type=c(rep("ZT",10),rep("BT",10)), diag=rep(unique(df$diag),2)))
+
+mo13 <- a %>% filter(type!="CC") %>% 
+  ggplot(aes(time*2, estimate, color = type, fill = type)) + 
+  geom_ribbon(aes(ymin = estimate-(1.96*SE), ymax = estimate + (1.96*SE)), alpha = 0.3, color=NA) +
+  geom_line() + 
+  #geom_line(data=subset(df, type=="CC"), color="black", inherit.aes = F, aes(time*2, estimate, linetype="CC"))+
+  scale_linetype_manual(values="dashed")+
+  scale_x_continuous(breaks = seq(0,8,2), limits=c(0,8)) +
+  scale_y_continuous(label = unit_format(unit = "k", sep = "", accuracy =1))+
+  facet_wrap(~diag, nrow = 2, scales="free_y") +
+  scale_color_brewer(palette="Paired") +
+  scale_fill_brewer(palette="Paired") +
+  labs(title = NULL, x = NULL, color="Estimator", fill="Estimator",linetype="Naive", y="DKK") + th
+mo13
+ggsave(mo13, file="plots/mo13.pdf", height = 4, width=10, dpi=600)
+```
+
+
+
+
+
+```{r fig.height=5, fig.width=12}
+p1 <- mss %>% 
+  group_by(datey=datey, grp) %>% 
+  summarize(sum=sum(med_price, na.rm=T)) %>% 
+  ggplot(aes(datey, sum, fill=grp)) + 
+  geom_area(position = "fill",alpha=0.8, size=0.3) + 
+  scale_x_date(date_breaks = "1 years", date_labels = "%y") +
+  scale_y_continuous(label = scales::percent)+
+  scale_fill_manual(values=pal4(10)) + th + 
+  scale_color_manual(values=pal4(10)) + 
+  labs(x=NULL, y=NULL,color=NULL, fill=NULL) +
+  facet_wrap(~"Fraction of cost over time") + 
+  annotate("rect", xmin=as.Date("2018-02-01"), xmax=as.Date("2019-01-01"),ymin=0, ymax=1, fill="white", color=NA, alpha=0.4)
+
+p2 <- mss %>% 
+  group_by(year, grp, IDNr) %>% 
+  summarize(sum=sum(med_price, na.rm=T)) %>% 
+  group_by(year, grp) %>% 
+  summarize(sum=mean(sum, na.rm=T)) %>% 
+  mutate(cyear = case_when(year %in% c(2008:2009) ~ "08/09",
+                           year %in% c(2017:2018) ~ "17/18")) %>% 
+  group_by(cyear, grp) %>% 
+  summarize(sum = mean(sum)) %>%
+  group_by(cyear) %>% mutate(ysum=sum(sum)) %>% 
+  ungroup() %>% 
+  mutate(pct=round(sum/ysum*100,2)) %>% 
+  mutate(pct=round(sum,2)) %>%
+  select(cyear, grp, pct) %>% 
+  filter(!is.na(cyear)) %>%
+  pivot_wider(names_from = cyear, values_from = pct) %>% 
+  mutate(diff=.$"17/18"-.$"08/09") %>% 
+  mutate(grp=paste0(grp, "\n",round(.$"08/09"/1e3),"k -> ", round(.$"17/18"/1e3), "k")) %>% 
+  ggplot(aes(diff,reorder(grp, diff))) + geom_col() + 
+  scale_fill_brewer(palette="Paired") + 
+  scale_x_continuous(breaks=c(-50000,-25000,0,25000,50000)) +
+  labs(x=NULL, y=NULL, fill=NULL) + th + 
+  facet_wrap(~"Change in average cost 08/09 -> 17/18")
+
+mo15 <- p1 + p2 + plot_layout(nrow=1, width=c(1.7,1))
+mo15
+ggsave(mo15, file="plots/mo15.pdf", height = 4, width=10, dpi=600)
+```
+
+
+
+
+```{r fig.height=4, fig.width=10}
+p1 <- mss %>% 
+  group_by(year, grp) %>% 
+  summarize(sum=sum(med_price, na.rm=T)) %>% 
+  group_by(grp) %>% 
+  mutate(label = if_else(year==2019, paste0(as.character(grp)," ",round(sum(sum/1e6)),"m"), NA_character_)) %>%
+  ggplot(aes(year, sum/1e6, group=grp, linetype=grp)) + 
+  geom_line(size=0.4, show.legend = F, color="grey20") +
+  th3  + labs(x=NULL, y=NULL) + 
+  scale_x_continuous(breaks=seq(2008,2019,2), limits=c(2008,2022.5))+
+  scale_y_continuous(limits=c(-3,44), labels=unit_format(unit = "m", sep = "")) +
+  geom_label_repel(aes(label = label),na.rm = TRUE, size=2.5,xlim =2022.7, 
+                       direction    = "y",
+                       angle        = 90,
+                       vjust        = 0,
+                       segment.size = 0.1,seed = 3, color="grey") +
+  geom_label_repel(aes(label = label),na.rm = TRUE, size=2.5,xlim =2022.7, 
+                       direction    = "y",
+                       angle        = 90,
+                       vjust        = 0,
+                       segment.size = 0.1, segment.alpha = 0,seed = 3)
+
+temp <- pf$data.survplot %>% group_by(strata) %>% 
+  filter(abs(surv-0.5) == min(abs(surv - 0.5))) %>% 
+  summarize(msurv = first(time)*12)
+
+p2 <- mss %>% 
+  group_by(grp, IDNr) %>% 
+  summarize(sum=sum(med_price, na.rm=T)) %>% 
+  group_by(grp) %>% 
+  summarize(sum=mean(sum, na.rm=T),
+            n=n()) %>% 
+  left_join(temp, by=c("grp"="strata")) %>% 
+  ggplot(aes(msurv, sum/1e3, size=n)) + geom_point() + 
+  geom_text(aes(label=grp),size=2.5, vjust=2.5) + 
+  scale_x_continuous(limits = c(-10,150)) + 
+  labs(x="Median survival in months",y="Mean cost",size="Number of\npatients") +
+  scale_y_continuous(limits=c(0,120),label=unit_format(unit = "k", sep = "", accuracy =1)) + 
+  th3 + theme(legend.key = element_rect(fill=NA))
+
+mo19 <- p1 + p2 + plot_layout(nrow=1, width=c(1,0.7))
+mo19
+#ggsave(mo19, file="plots/mo19.pdf", height = 4.5, width=11, dpi=600)
+```
+
+
+
+
+```{r fig.height=2, fig.width=10}
+# One year survival
+mo7 <- mss %>% 
+  filter(firstdate<"2018-01-01") %>% 
+  filter(!is.na(age),
+         age>39) %>% 
+  group_by(IDNr) %>% 
+  filter(surv_day==max(surv_day)) %>% 
+  summarize_all(first) %>% 
+  mutate(cure = surv-surv_day,
+         event=if_else(event==1,"Dead","Censored")) %>% 
+  group_by(age=cut(age,10, dig.lab=0), event) %>% 
+  summarize(f = sum(cure>(365*3))/n()) %>% ggplot(aes(age, f)) + 
+  geom_col() + 
+  scale_y_continuous(labels=scales::percent_format(accuracy = 1)) +
+  facet_wrap(~event) + th + labs(y=NULL)
+mo7
+ggsave(mo7,  file="plots/mo7.pdf",  height = 2, width=10, dpi=600)
+```
+
+
+
+

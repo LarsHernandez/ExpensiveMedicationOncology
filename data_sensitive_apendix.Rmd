@@ -1,0 +1,246 @@
+---
+title: "Makroanalyse medicinpriser"
+author: "Lars Børty"
+date: "14/9/2019"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float:
+      collapsed: no
+---
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(readxl)
+library(haven)
+library(lubridate)
+library(magrittr)
+library(patchwork)
+library(ggthemes)
+library(survival)
+library(survminer)
+library(ccostr)
+library(kableExtra)
+library(xtable)
+library(ggrepel)
+library(stargazer)
+library(scales)
+library(RColorBrewer)
+
+th <- theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+
+load("Z:/lars_speciale/generated_data/ppmg_yr.rdata")
+load("Z:/lars_speciale/generated_data/ppmg_mo.rdata")
+load("Z:/lars_speciale/generated_data/atc_lookup.rdata")
+load("Z:/lars_speciale/generated_data/age2.rdata")
+load("Z:/lars_speciale/generated_data/diag2.rdata")
+load("Z:/lars_speciale/generated_data/mss2.rdata")
+load("Z:/lars_speciale/generated_data/mssg2.rdata")
+load("Z:/lars_speciale/generated_data/pharm.rdata")
+load("Z:/lars_speciale/generated_data/NORD.rdata")
+```
+
+
+
+
+
+
+```{r}
+# It's important to adjust the data with some extra observations of a price of 0 on the last day of surv
+# if not the curves won't show the last part of the cost curve for people cured
+mss_adj <- mss %>% 
+  filter(IDNr != "32385435") %>%  #death in 2001???
+  group_by(IDNr) %>% 
+  arrange(date) %>% 
+  summarise_all(.funs = last) %>% 
+  mutate(med_price = 0,
+         date = if_else(event==1, death_date, as.Date("2019-12-12")),
+         surv_day = surv + 0.1) %>%
+  bind_rows(mss) %>% 
+  filter(surv > 0) %>% 
+  mutate(event = if_else(event == 1, "Dead","Censored")) %>%   
+  group_by(IDNr) %>% 
+  arrange(surv_day) %>% 
+  mutate(cprice = cumsum(med_price)/1e6,
+         surv_day = (surv_day/365.25)*12)
+#mo8 <- mss_adj %>% 
+#  ggplot(aes(date, cprice, group=IDNr, color=event)) + 
+#  geom_step(alpha = 0.3, size=0.2) + 
+#  scale_color_manual("Status", values=c("#1f78b4","black")) + 
+#  facet_wrap(~grp, nrow=2, scales="free_y") +
+#  th
+#mo8
+
+plts <- list()
+dia <- unique(mssg$grp)
+
+for (i in 1:length(dia)) {
+  
+
+tt <- mss_adj %>% 
+  filter(grp==dia[i]) %>% 
+  ggplot(aes(surv_day, cprice, group=IDNr, color=event)) + 
+  geom_step(alpha = 0.3, size=0.3) + 
+  facet_wrap(~grp, nrow = 2, scales = "free_y") + 
+  scale_x_continuous(breaks=seq(0,144, by=24)) +
+  scale_color_manual("Status:", values=c("#1f78b4","black")) + 
+  labs(title=NULL, x = "Survival in months", y = "accumulated cost") + 
+  th + theme(legend.position="top")
+
+plts[[i]] <- tt
+
+}
+```
+
+
+
+
+```{r}
+for(i in 1:length(dia)){
+ ggsave(plot = plts[[i]], file = paste("plots/sens/Diag_",dia[i],".pdf",sep=""), 
+        width = 11, height = 6, dpi = 300, units = "in")
+}
+
+mo9 <- mss_adj %>% 
+  ggplot(aes(surv_day, cprice, group=IDNr, color=event)) + 
+  geom_step(alpha = 0.3, size=0.3) + 
+  facet_wrap(~grp, nrow = 2, scales = "free_y") + 
+  scale_x_continuous(breaks=seq(0,144, by=24)) +
+  scale_color_manual("Status:", values=c("#1f78b4","black")) + 
+  labs(title=NULL, x = "Survival in months", y = "accumulated cost") + 
+  th + theme(legend.position="top")
+ggsave(mo9,  file="plots/sens/aaa.pdf",  height = 6, width=11, dpi=150)
+mo9
+
+
+mss_adj %>% 
+  filter(grp=="Breast") %>% 
+  ggplot(aes(surv_day, cprice, group=IDNr, color=age)) + 
+  geom_step(size=0.4) + 
+  facet_wrap(~grp, nrow = 2, scales = "free_y") + 
+  scale_x_continuous(breaks=seq(0,144, by=24)) +
+  scale_color_fermenter(breaks=c(0,45,60,75,999), palette = "Spectral")+
+  labs(title=NULL, x = "Survival in months", y = "accumulated cost")+ facet_wrap(~event)+ 
+  th + theme(legend.position="top")
+
+mss_adj %>% 
+  filter(grp=="Other") %>% 
+  ggplot(aes(surv_day, cprice, group=IDNr, color=age)) + 
+  geom_step(size=0.4) + 
+  facet_wrap(~grp, nrow = 2, scales = "free_y") + 
+  scale_x_continuous(breaks=seq(0,144, by=24)) +
+  scale_color_fermenter(breaks=c(0,45,60,75,999), palette = "Spectral")+
+  labs(title=NULL, x = "Survival in months", y = "accumulated cost")+ facet_wrap(~event)+ 
+  th + theme(legend.position="top")
+
+mss_adj %>% 
+  filter(grp=="Rectum") %>% 
+  ggplot(aes(surv_day, cprice, group=IDNr, color=age)) + 
+  geom_step(size=0.4) + 
+  facet_wrap(~grp, nrow = 2, scales = "free_y") + 
+  scale_x_continuous(breaks=seq(0,144, by=24)) +
+  scale_color_fermenter(breaks=c(0,45,60,75,999), palette = "Spectral")+
+  labs(title=NULL, x = "Survival in months", y = "accumulated cost")+ facet_wrap(~event)+
+  th + theme(legend.position="top")
+```
+
+```{r}
+library(staplr)
+staple_pdf(output_filepath = "Z:/lars_speciale/plots/sens_costcurves.pdf")
+
+```
+
+```{r}
+mss_adj %>% 
+  filter(grp=="Lung") %>% 
+  ggplot(aes(surv_day, cprice, group=IDNr, color=age)) + 
+  geom_step(size=0.4) + 
+  facet_wrap(~grp, nrow = 2, scales = "free_y") + 
+  scale_x_continuous(breaks=seq(0,144, by=24)) +
+  scale_color_fermenter(breaks=c(0,45,60,75,999), palette = "Spectral")+
+  labs(title=NULL, x = "Survival in months", y = "accumulated cost")+ facet_wrap(~event)+ 
+  th + theme(legend.position="top")
+```
+
+
+
+
+
+
+
+
+```{r fig.height=7, fig.width=12}
+mss_adj %>% 
+  ggplot(aes(surv_day, cprice, group=IDNr, color=age)) + 
+  geom_step(alpha = 0.7, size=0.2) + 
+  facet_wrap(~grp, nrow = 2, scales = "free_y") + 
+  scale_x_continuous(breaks=seq(0,144, by=24)) +
+  scale_color_binned("Status", breaks=c(0,65,80,120),type = "viridis") + 
+  labs(title=NULL, x = "Survival in months", y = "accumulated cost") +
+  th
+
+test <- mss_adj %>% filter(IDNr%in% c(21211218, 27843769,17753223,31056631,31050646,22415939)) %>% ungroup() %>% mutate(IDNr = as.factor(IDNr))
+
+library(plotly)
+
+test %>% ungroup() %>% 
+  plot_ly(x = ~cprice, y = ~surv_day, group = ~IDNr, z=~event, color = ~IDNr, 
+                type = "scatter3d", mode = "lines")
+
+mss_adj%>% ungroup() %>% mutate(IDNr = as.factor(IDNr),
+                                age = as.factor(age))  %>% 
+    plot_ly(x = ~cprice, y = ~surv_day, group = ~IDNr, z=~age, 
+             type = "scatter3d", mode = "lines")
+```
+
+
+
+
+
+
+
+
+```{r fig.height=6, fig.width=10}
+pr1 <- mss_adj %>% 
+  filter(grp=="Lung") %>% 
+  mutate(col=if_else(IDNr=="24567013", T,F)) %>% 
+  ggplot(aes(surv_day, cprice*1e6, group=IDNr, color=col)) + 
+  geom_step(size=0.2,show.legend = F, alpha=0.5) + 
+  geom_step(data=mss_adj %>% filter(IDNr=="24567013"), size=0.5, color="red") + 
+  scale_x_continuous(breaks=seq(0,144, by=24)) +
+  scale_y_continuous(breaks=seq(0,3000000,500000)) +
+  scale_color_manual(values = c("black","red")) +
+  labs(title=NULL, x = "Survival in months", y = "DKK") +
+  th3 + theme(legend.position="top")
+ggsave(pr1,  file="plots/pr1.png",  height = 6, width=11, dpi=400)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

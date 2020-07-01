@@ -1,0 +1,475 @@
+---
+title: "Makroanalyse medicinpriser"
+author: "Lars Børty"
+date: "14/9/2019"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float:
+      collapsed: no
+---
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(RColorBrewer)
+library(patchwork)
+
+pal4 <- colorRampPalette(brewer.pal(4, "Paired"))
+th <- theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+th1 <- theme_minimal() + 
+  theme(panel.grid.major.x = element_blank(), panel.grid.minor = element_blank())
+#pal1 <- ggthemes_data[["tableau"]][["color-palettes"]][["regular"]]$`Classic 10`
+```
+
+
+```{r}
+load("Z:/lars_speciale/generated_data/ppmg_yr.rdata")
+load("Z:/lars_speciale/generated_data/pharm_haem.rdata")
+load("Z:/lars_speciale/generated_data/atc_codes.rdata")
+```
+
+
+
+
+```{r}
+a1 <- pharm %>% 
+  ungroup() %>% 
+  summarize(sum = sum(cost))
+a2 <- pharm %>% 
+  filter(atc_code == "fee_injmix" | substr(atc_code,1,1) == "L") %>% 
+  ungroup() %>% 
+  summarize(sum = sum(cost))
+a3 <- pharm %>% 
+  filter(substr(atc_code,1,1) == "L") %>% 
+  ungroup() %>% 
+  summarize(sum = sum(cost))
+a4 <- pharm %>% 
+  filter(substr(atc_code,1,1) == "L") %>% 
+  filter(n>0) %>% 
+  group_by(atc_code) %>% 
+  summarize(sum = sum(cost)) %>% 
+  filter(atc_code %in% ppmg_yr$atc_code) %>% # Filtering for drugs with a total cost less than 1m still gives most expenses
+  ungroup() %>% 
+  summarize(sum(sum))
+
+b1 <- pharm %>% 
+  group_by(atc_code) %>% 
+  summarize(sum = sum(cost)) %>% 
+  summarize(a=n())
+b2 <- pharm %>% 
+  filter(atc_code == "fee_injmix" | substr(atc_code,1,1) == "L") %>% 
+  group_by(atc_code) %>% 
+  summarize(sum = sum(cost)) %>% 
+  summarize(a=n())
+b3 <- pharm %>% 
+  filter(substr(atc_code,1,1) == "L") %>% 
+  group_by(atc_code) %>% 
+  summarize(sum = sum(cost)) %>% 
+  summarize(a=n())
+b4 <- pharm %>% 
+  filter(substr(atc_code,1,1) == "L") %>% 
+  group_by(atc_code) %>% 
+  summarize(sum = sum(cost)) %>% 
+  filter(atc_code %in% ppmg_yr$atc_code) %>% # Filtering for drugs with a total cost less than 1m still gives most expenses
+  ungroup()%>% summarize(a=n())
+
+a1[[1]]/1e6;b1[[1]]
+a2[[1]]/1e6;b2[[1]]
+a3[[1]]/1e6;b3[[1]]
+a4[[1]]/1e6;b4[[1]]
+```
+
+
+
+```{r}
+ppmg_yr %>% group_by(atc_code) %>% 
+  summarize(ppmg_rng = max(ppmg)/min(ppmg),
+            cost_rng = max(cost)/min(cost))
+```
+
+
+
+
+```{r message=FALSE, warning=FALSE}
+pharm %>% 
+  group_by(str_unit) %>% 
+  summarize(sum = round(sum(cost))) %>% 
+  arrange(desc(sum)) %>% 
+  mutate(csum = round(cumsum(sum)/sum(sum) * 100, 1))
+```
+
+
+
+
+
+
+
+```{r fig.height=6, fig.width=11, message=FALSE, warning=FALSE}
+ren <- pharm %>% 
+  group_by(atc_code, brand_name) %>% 
+  summarize(fs = min(date)) %>% 
+  arrange(fs) %>% 
+  mutate(bg = sequence(n()))
+
+top <- pharm %>% group_by(atc_code) %>% summarize(cost=sum(cost)) %>% top_n(50, wt=cost) %>% arrange(desc(cost))
+top <- top$atc_code
+
+atc <- "L01BC02"
+atc <- "L01CD01"
+
+plts <- list()
+
+for (i in 1:length(top)) {
+  
+  atc <- top[i]
+  
+  p1 <- pharm %>% 
+    filter(atc_code == atc) %>% 
+    left_join(ren, by=c("atc_code"= "atc_code","brand_name"="brand_name")) %>% 
+    mutate(generic_name = paste0(generic_name,"\n", round(sum/1000000,2),"m")) %>% 
+    ggplot(aes(date, cost/1000000, fill=as.factor(brand_name), color = as.factor(brand_name))) + 
+    scale_color_manual("Brand\nname",values=rep(pal4(7),4)) + 
+    scale_fill_manual("Brand\nname",values=rep(pal4(7),4)) + 
+    geom_col(show.legend = F, size=0.8) + 
+      scale_x_date(date_breaks="year", date_labels = "%Y")+
+      facet_wrap(~reorder(generic_name,desc(sum)), scales="free_y") + 
+    labs(x=NULL, y="Monthly cost in MDKR")
+  
+  p2 <- pharm %>% 
+    group_by(atc_code) %>% 
+    mutate(sum = sum(cost)) %>% 
+    filter(str_unit %in% c("mg","mg/ml","-","g","g/l")) %>% 
+    mutate(ppmg = case_when(str_unit == "mg"    ~ pkg_cost / (pkg_size * str_num),
+                            str_unit == "mg/ml" ~ pkg_cost / (pkg_size * str_num),
+                            str_unit == "g"     ~ pkg_cost / (pkg_size * str_num * 1000),
+                            str_unit == "g/l"   ~ pkg_cost / (pkg_size * str_num * 1000),
+                            str_unit == "-"     ~ pkg_cost)) %>% 
+    left_join(ren, by=c("atc_code"= "atc_code","brand_name"="brand_name")) %>% 
+    filter(atc_code == atc) %>% 
+    ggplot(aes(date, ppmg, color=as.factor(brand_name), group=id)) + 
+    geom_step(show.legend = T, size=1, alpha=0.9) + 
+    scale_color_manual("Brand\nname", values=rep(pal4(7),4)) +
+      scale_x_date(date_breaks="year", date_labels = "%Y")+
+    labs(fill="Brand\numeric", x=NULL)
+  
+  p3 <- pharm %>% 
+    filter(atc_code == atc) %>%  
+    left_join(ren, by=c("atc_code"= "atc_code","brand_name"="brand_name")) %>% 
+    mutate(n = n * as.numeric(str_num) * as.numeric(pkg_size)) %>% 
+    ggplot(aes(date, n/1000, fill=as.factor(brand_name), color = as.factor(brand_name))) + 
+    scale_color_manual("Brand\nname",values=rep(pal4(7),4)) + 
+    scale_fill_manual("Brand\nname",values=rep(pal4(7),4)) + 
+    geom_col(show.legend = F, size=0.8) + 
+    scale_x_date(date_breaks="year", date_labels = "%Y")+
+    labs(x=NULL, y="Monthly g bought", 
+         caption = "Source: Apovision ~ Oncological Department North Denmark Region")
+  
+plts[[i]] <- p1 + p2 + p3 + plot_layout(nrow = 3, guides = "collect", heights = c(1.5,1,1))
+#print(p1 + p2 + p3 + plot_layout(nrow = 3, guides = "collect", heights = c(1.5,1,1)))
+}
+
+```
+
+```{r}
+for(i in 1:length(top)){
+ ggsave(plot = plts[[i]], file = paste("plots/haem_plots/atc_",top[i],".png",sep=""), width = 12, height = 8, dpi = 300, units = "in")
+}
+```
+
+
+
+
+```{r fig.height=4, fig.width=10}
+df <- ppmg_yr %>% group_by(atc_code) %>% mutate(atc_year=min(year)) %>% 
+  group_by(year, atc_year) %>% summarize(cost=sum(cost, na.rm=T))
+
+p.data <- merge(df,expand.grid(atc_year=unique(df$atc_year),
+                            year=unique(df$year),
+                            stringsAsFactors=F),all.y=T)
+
+pb <- colorRampPalette(brewer.pal(9, "Blues"))
+p.data$cost[is.na(p.data$cost)] <- 0
+
+ph7 <- ggplot(p.data, aes(year, cost/1e6, fill=as.factor(atc_year))) + 
+  scale_fill_manual(values = pb(10)[2:10]) +
+  scale_x_continuous(breaks=seq(2008,2019,1)) +
+  scale_y_continuous(breaks=seq(0,160,20),label = unit_format(unit = "m", sep = "", accuracy = 1))+
+  geom_area(color="white", size=0.1) + th1 + 
+  labs(y="Expenditure", x=NULL, fill="Year introduced")
+ph7
+
+ggsave(ph7, file="plots/ph7.pdf", height = 3, width=10, dpi=600)
+```
+
+
+
+
+```{r fig.height=6, fig.width=10}
+p1 <- pharm %>% 
+  #filter(atc_code %in% top) %>% 
+  group_by(year, cod = substr(atc_code,1,1)) %>% 
+  summarize(sum=sum(cost, na.rm=T)) %>% 
+  arrange(desc(sum)) %>% 
+  mutate(cod = case_when(cod=="f" ~ "fee", 
+                          cod=="L" ~ "l",
+                          cod %in% c("A","B","C","D","G","H","J","M","N","P","R","S","V")~"o")) %>% 
+  group_by(cod) %>% 
+  mutate(name = case_when(cod == "fee" ~ paste0("Fee\n",round(sum(sum)/1e6),"m"), 
+                          cod == "l" ~ paste0("L Drugs\n", round(sum(sum)/1e6),"m"),
+                          cod == "o" ~ paste0("Other Drugs\n",round(sum(sum)/1e6),"m"))) %>% 
+  filter(!is.na(cod)) %>% 
+  mutate(year=substr(year,3,4)) %>%
+  ggplot(aes(as.factor(year), sum/1e6, fill=name)) +   
+  scale_fill_manual(values=rep(pal4(7),4))+
+  geom_col(width=0.8, color=NA) + 
+  scale_y_continuous(breaks=seq(0,160,20),label = unit_format(unit = "m", sep = "", accuracy = 1))+
+  labs(title=NULL, y="DKK",x=NULL, caption=NULL, fill=NULL) + 
+  th1 + theme(legend.key.height = unit(1, "cm")) +
+  coord_cartesian(ylim=c(8,170))
+
+p2 <- pharm %>% 
+  filter(atc_code != "fee_injmix") %>% 
+  group_by(year=as.Date(paste0(year,"-01-01")), cod = substr(atc_code,1,5)) %>% 
+  summarize(sum=sum(cost, na.rm=T)) %>% 
+  left_join(satc) %>% 
+  mutate(cod=paste0(cod,"\n",Tekst)) %>% 
+  arrange(desc(sum)) %>% 
+  group_by(cod) %>% 
+  filter(sum(sum)>25000000) %>% 
+  ggplot(aes(year, sum/1e6)) +   
+  geom_col(width=310) + 
+  facet_wrap(~reorder(cod, desc(sum)), nrow=3, scales="free_y")+
+  scale_y_continuous(label = unit_format(unit = "m", sep = "", accuracy = 1)) +
+  scale_x_date(date_breaks = "2 years", date_labels = "%Y") +
+  labs(title=NULL, y=NULL,x=NULL, caption="Source: Apovision ~ Department of Oncology Aalborg University Hospital") + 
+  theme(axis.text.x = element_text(angle = 45, size=8,hjust = 1)) +
+  th 
+
+p1 + p2 + plot_layout(width=c(1,1.7))
+
+
+
+atc <- read_delim("C:/Users/upc6/Desktop/atc.csv", 
+                  ";", escape_double = FALSE, trim_ws = TRUE)
+satc <- atc %>% filter(nchar(Kode) == 6) %>% 
+  mutate(cod=substr(Kode,2,6))
+
+Encoding(satc$Tekst) <- "UTF-8"
+satc$Tekst <- iconv(satc$Tekst, "UTF-8", "UTF-8",sub='') ## replace any non UTF-8 by ''
+"faile"
+```
+
+
+
+
+```{r fig.height=3, fig.width=10}
+ph3 <- pharm %>% 
+  group_by(atc_code) %>% 
+  summarize(sum=sum(cost, na.rm=T)) %>% 
+  arrange((sum)) %>% 
+  mutate(csum = cumsum(sum)/sum(sum),
+         n = row_number()) %>% 
+  ggplot(aes(n, csum*100)) + 
+  geom_line() + 
+  geom_segment(aes(x=492, xend=492, y=0,    yend=16), linetype="dashed")+
+  geom_text(aes(x=475, y=29, label="Top 48 catches\n97.17% of costs"), check_overlap = T, size=4)+
+  geom_ribbon(aes(ymin=0, ymax=csum*100), alpha=0.4) + 
+  geom_ribbon(aes(ymin=0, ymax=n/max(n)*100), alpha=0.1) + 
+  scale_x_continuous(breaks=c(0,100,200,300,400,500,541)) +
+  scale_y_continuous(label = unit_format(unit = "%", sep = "")) +
+  labs(title=NULL, x="Cummulative cost of drugs arranged by total cost", y=NULL, 
+       caption="Source: Apovision ~ Oncological Department North Denmark Region") + 
+  th
+ph3
+```
+
+
+
+
+```{r fig.height=6, fig.width=10}
+ph4 <- plts[[match("L01XC03",top)]] & theme(axis.text.y = element_blank()) & th
+ph5 <- plts[[match("L01BC02",top)]] & theme(axis.text.y = element_blank()) & th
+
+ph4;ph5
+```
+
+
+
+
+
+```{r fig.height=5, fig.width=12}
+dat <- ppmg_yr %>% filter(atc_code !="fee_injmix")
+
+ttemp <- dat %>% 
+  full_join(atc_codes, by="atc_code") %>% 
+  group_by(name) %>% 
+  summarize(sum = sum(cost, na.rm=T)) %>% 
+  filter(sum>31500000) %>% 
+  select(name) %>% 
+  mutate(ccol = "yes")
+
+temp <- dat %>% 
+  full_join(atc_codes, by="atc_code") %>% 
+  group_by(year, name) %>% 
+  summarize(sum = sum(cost, na.rm=T)) %>% 
+  group_by(year) %>% 
+  mutate(rankk = rank(-sum)) %>% 
+  left_join(ttemp, by="name") %>% 
+  mutate(ccode = if_else(is.na(ccol), NA_character_, name))
+
+ph6 <- temp %>% 
+  ggplot(aes(year, rankk, group=name, color=ccode)) + 
+  geom_line(data=subset(temp, is.na(ccode)), show.legend = F, size=1.5, alpha=1) + 
+  geom_line(data=subset(temp, !is.na(ccode)), show.legend = F, size=1.5, alpha=1) + 
+  geom_point(size = 2.5, shape=21, stroke=2.5, fill="white",show.legend = F) +
+  scale_color_manual(values=rev(pal1$value),na.value="grey85") +
+  scale_x_continuous(breaks=seq(2008,2019,1)) +
+  geom_text(data=subset(temp, year==2019), aes(label=name, x=year+0.3), 
+            size=4, show.legend = F, fontface = "bold", hjust = "left") +
+  geom_text(data=subset(temp, year==2008), aes(label=name, x=year-0.3), 
+            size=4, show.legend = F, fontface = "bold", hjust = "right") +
+  labs(title=NULL, y=NULL, x=NULL, caption="Source: Apovision ~ Department of Oncology Aalborg University Hospital") + 
+  theme(legend.key.height=unit(1.7,"line"),
+        legend.key.width =unit(0.8,"line"),
+        legend.text=element_text(size=8)) + 
+  scale_y_reverse(breaks = c(1:20)) + 
+  coord_cartesian(xlim=c(2007,2021), ylim=c(19.6,1)) +
+  theme_minimal() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+ph6
+```
+
+```{r}
+ggsave(ph1, file="plots/ph1.pdf", height = 5, width=12, dpi=600)
+#ggsave(ph3, file="plots/ph3.pdf", height = 3, width=10, dpi=600)
+ggsave(ph4, file="plots/ph4.pdf", height = 7, width=12, dpi=600)
+ggsave(ph5, file="plots/ph5.pdf", height = 7, width=12, dpi=600)
+ggsave(ph6, file="plots/ph6.pdf", height = 5, width=12, dpi=600)
+```
+
+
+
+
+```{r}
+pharm %>% group_by(generic_name) %>% summarize(tot=sum(cost, na.rm=T)/1e6) %>% top_n(25,wt = tot) %>% 
+  ggplot(aes(reorder(generic_name,tot), tot)) + geom_col() + coord_flip() + th3 + labs(x=NULL, y="DKK")
+```
+
+
+```{r}
+
+haem_pharm <- read_excel("Z:/lars_speciale/external_data/haem_pharm2.xlsx")
+names(haem_pharm) <- c("atc_code_description", "info","brand_name","form","pkg_size","pkg_unit",
+                      "pkg_text","str_num","str_unit", "str_text","year","month","ym","cost","n")
+
+haem_pharm <- haem_pharm %>% 
+  filter(cost != 0) %>% 
+  filter(n    != 0) %>% 
+  mutate(mon = substr(month,1,3)) %>% 
+  mutate(month = case_when(mon == "jan" ~ 1,  mon == "feb" ~ 2,  mon == "mar" ~ 3,
+                           mon == "apr" ~ 4,  mon == "maj" ~ 5,  mon == "jun" ~ 6,
+                           mon == "jul" ~ 7,  mon == "aug" ~ 8,  mon == "sep" ~ 9,
+                           mon == "okt" ~ 10, mon == "nov" ~ 11, mon == "dec" ~ 12)) %>% 
+  mutate(date = as.Date(paste0(year,"-",month,"-01")))
+
+defl <- statsDK::sdk_retrieve_data("PRIS112") %>% 
+  filter(HOVED == "Average, yearly", between(TID, 2007, 2020)) %>% 
+  mutate(index = as.numeric(INDHOLD)/103, year = TID) %>% 
+  select(year, index) %>% 
+  rbind(tibble(year=2020, index=1))
+
+haem_pharm <- haem_pharm %>% 
+  left_join(defl, by = "year") %>% 
+  mutate(cost = cost/index) %>% 
+  separate(atc_code_description, c("atc_code","generic_name"), " ", extra = "merge") %>% 
+  mutate(generic_name = str_trim(generic_name)) %>% 
+  separate(info, c("id","MIX"), " ", extra = "merge") %>% 
+  mutate(str_num = as.numeric(str_replace(str_num, pattern = ",", replacement = "."))) %>% 
+  mutate(pkg_cost = cost/n) %>% 
+  mutate(atc_code = if_else(id %in% c("802809", "831545"), "fee_injmix", atc_code)) %>% 
+  group_by(atc_code) %>% 
+  mutate(sum = sum(cost))
+
+onc_pharm <- read_excel("Z:/lars_speciale/external_data/onc_pharm_2020.xlsx")
+names(onc_pharm) <- c("atc_code_description", "info","brand_name","form","pkg_size","pkg_unit",
+                      "pkg_text","str_num","str_unit", "str_text","year","month","ym","cost","n")
+
+onc_pharm <- onc_pharm %>% 
+  filter(cost != 0) %>% 
+  filter(n    != 0) %>% 
+  mutate(mon = substr(month,1,3)) %>% 
+  mutate(month = case_when(mon == "jan" ~ 1,  mon == "feb" ~ 2,  mon == "mar" ~ 3,
+                           mon == "apr" ~ 4,  mon == "maj" ~ 5,  mon == "jun" ~ 6,
+                           mon == "jul" ~ 7,  mon == "aug" ~ 8,  mon == "sep" ~ 9,
+                           mon == "okt" ~ 10, mon == "nov" ~ 11, mon == "dec" ~ 12)) %>% 
+  mutate(date = as.Date(paste0(year,"-",month,"-01")))
+
+onc_pharm <- onc_pharm %>% 
+  left_join(defl, by = "year") %>% 
+  mutate(cost = cost/index) %>% 
+  separate(atc_code_description, c("atc_code","generic_name"), " ", extra = "merge") %>% 
+  mutate(generic_name = str_trim(generic_name)) %>% 
+  separate(info, c("id","MIX"), " ", extra = "merge") %>% 
+  mutate(str_num = as.numeric(str_replace(str_num, pattern = ",", replacement = "."))) %>% 
+  mutate(pkg_cost = cost/n) %>% 
+  mutate(atc_code = if_else(id %in% c("802809", "831545"), "fee_injmix", atc_code)) %>% 
+  group_by(atc_code) %>% 
+  mutate(sum = sum(cost))
+```
+
+
+
+```{r fig.height=6, fig.width=13}
+a <- haem_pharm %>% select(-str_num, -month) %>% 
+  filter(between(year, 2008,2019)) %>% 
+  group_by(year, cod = substr(atc_code,1,1)) %>% 
+  summarize(sum=sum(cost, na.rm=T)) %>% 
+  arrange(desc(sum)) %>% 
+  mutate(cod = case_when(cod=="f" ~ "fee", 
+                          cod=="L" ~ "l",
+                          cod %in% c("A","B","C","D","G","H","J","M","N","P","R","S","V")~"o")) %>% 
+  group_by(cod) %>% 
+  mutate(name = case_when(cod == "fee" ~ paste0("Fee\n",round(sum(sum)/1e6),"m"), 
+                          cod == "l" ~ paste0("L Drugs\n", round(sum(sum)/1e6),"m"),
+                          cod == "o" ~ paste0("Other Drugs\n",round(sum(sum)/1e6),"m"))) %>% 
+  filter(!is.na(cod)) %>% 
+  ggplot(aes(as.factor(year), sum/1e6, fill=name)) +   
+  scale_fill_manual(values=rep(pal4(7),4))+
+  scale_y_continuous(label = unit_format(unit = "m", sep = "", accuracy = 1)) + 
+  geom_col(width=0.8, color=NA) + 
+  scale_y_continuous(breaks=seq(0,170,20),label = unit_format(unit = "m", sep = "", accuracy = 1))+
+  labs(title=NULL, y="DKK",x=NULL, caption=NULL, fill=NULL) + 
+  facet_wrap(~"Department of Haematology") +
+  coord_cartesian(ylim=c(7,170))+
+  th1 + theme(legend.key.height = unit(1, "cm"))
+
+b <- onc_pharm %>% select(-str_num, -month) %>% 
+  filter(between(year, 2008,2019)) %>% 
+  group_by(year, cod = substr(atc_code,1,1)) %>% 
+  summarize(sum=sum(cost, na.rm=T)) %>% 
+  arrange(desc(sum)) %>% 
+  mutate(cod = case_when(cod=="f" ~ "fee", 
+                          cod=="L" ~ "l",
+                          cod %in% c("A","B","C","D","G","H","J","M","N","P","R","S","V")~"o")) %>% 
+  group_by(cod) %>% 
+  mutate(name = case_when(cod == "fee" ~ paste0("Fee\n",round(sum(sum)/1e6),"m"), 
+                          cod == "l" ~ paste0("L Drugs\n", round(sum(sum)/1e6),"m"),
+                          cod == "o" ~ paste0("Other Drugs\n",round(sum(sum)/1e6),"m"))) %>% 
+  filter(!is.na(cod)) %>% 
+  ggplot(aes(as.factor(year), sum/1e6, fill=name)) +   
+  scale_fill_manual(values=rep(pal4(7),4))+
+  scale_y_continuous(label = unit_format(unit = "m", sep = "", accuracy = 1)) + 
+  geom_col(width=0.8, color=NA) + 
+  scale_y_continuous(breaks=seq(0,170,20),label = unit_format(unit = "m", sep = "", accuracy = 1))+
+  labs(title=NULL, y="DKK",x=NULL, caption=NULL, fill=NULL) + 
+  coord_cartesian(ylim=c(7,170))+
+  facet_wrap(~"Department of Oncology") +
+  th1 + theme(legend.key.height = unit(1, "cm"))
+
+b + a
+
+```
+
+

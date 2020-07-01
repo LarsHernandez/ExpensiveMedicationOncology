@@ -1,0 +1,623 @@
+---
+title: "data_medonc_tables"
+output: html_document
+---
+
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(haven)
+library(lubridate)
+library(magrittr)
+library(ccostr)
+library(kableExtra)
+library(xtable)
+library(ggrepel)
+library(stargazer)
+library(lme4)
+
+load("Z:/lars_speciale/generated_data/ppmg_yr.rdata")
+load("Z:/lars_speciale/generated_data/ppmg_mo.rdata")
+load("Z:/lars_speciale/generated_data/atc_lookup.rdata")
+load("Z:/lars_speciale/generated_data/age2.rdata")
+load("Z:/lars_speciale/generated_data/diag2.rdata")
+load("Z:/lars_speciale/generated_data/mss2.rdata")
+load("Z:/lars_speciale/generated_data/ms2.rdata")
+load("Z:/lars_speciale/generated_data/mssg2.rdata")
+load("Z:/lars_speciale/generated_data/pharm.rdata")
+load("Z:/lars_speciale/generated_data/NORD.rdata")
+```
+
+
+```{r}
+dat <- mss %>% filter(year %in% c(2008,2009,2017,2018)) %>% 
+  mutate(period=if_else(year%in%c(2008,2009),"08/09","17/18"))
+d <- dat %>% filter(period=="08/09")
+atc <- d$atc_code %>% unique()
+
+a <- dat %>% 
+  group_by(period) %>% 
+  summarize(treatments = n(),
+            mean_price = mean(med_price),
+            total_price = sum(med_price)/1e6,
+            atc_codes = length(unique(atc_code)))
+
+b <- dat %>% 
+  group_by(IDNr) %>%
+      mutate(nn=n()) %>% 
+  summarize_all(first) %>% 
+  group_by(period) %>% 
+  summarize(patients=n(),
+            mtreat = mean(nn, na.rm=T)) %>% 
+  select(-period)
+
+dd <- cbind(a,b) 
+tab1 <- dd %>% 
+  summarize_if(is.numeric, .funs= ~ (.[2]-.[1])/.[1]*100) %>% 
+  mutate(period="difference") %>% 
+  rbind(dd,.) %>% 
+  select(period, everything()) %>% 
+  mutate_if(is.numeric, .funs= ~ round(.,2)) 
+
+tab2 <- dat %>% 
+  mutate(nd = atc_code %in% atc) %>% 
+  filter(period == "17/18") %>% 
+  group_by(nd) %>% 
+  summarize(treatments = n(),
+            mean_price = mean(med_price),
+            total_price = sum(med_price)/1e6,
+            atc_codes = length(unique(atc_code))) %>% 
+  mutate(period = c("17/18 - only new drugs","17/18 - only old drugs")) %>% 
+  select(period, everything(),-nd)
+
+
+print(xtable(tab1, type = "latex", booktabs = T, digits = 2),include.rownames=FALSE)
+print(xtable(tab2, type = "latex", booktabs = T, digits = 2),include.rownames=FALSE)
+
+```
+
+
+```{r}
+a <- unique(ms$atc_code)
+b <- pharm %>% filter(year %in% c(2008,2019)) %>% 
+  group_by(year) %>% summarize(idn=length(unique(id)),
+                                       atcn= length(unique(atc_code)),
+                                       bram=length(unique(brand_name)),
+                                       msn=length(unique(atc_code[atc_code %in% a])))
+
+tab <- rbind(b,b %>% summarize_if(is.numeric, .funs= ~ round((.[2]-.[1])/.[1]*100,1)))
+
+print(xtable(tab, type = "latex", booktabs = T, digits = 1),include.rownames=FALSE)
+```
+
+
+
+
+```{r}
+# Who are cured from treatment
+tab <- mss %>% 
+  filter(firstdate<"2017-01-01") %>% 
+  filter(!is.na(age)) %>% 
+  group_by(IDNr) %>% 
+  filter(surv_day==max(surv_day)) %>% 
+  summarize_all(first) %>% 
+  mutate(cure = surv-surv_day) %>% 
+  group_by(grp) %>% 
+  summarize(f = sum(cure>(365*3))/n()*100) %>% 
+  arrange(f)
+#print(xtable(tab, type = "latex", booktabs = T, digits = 2),include.rownames=FALSE)
+```
+
+```{r}
+#mssg %>% select(full_price, gender, grp, ndiag,ntreat,ndrug,age,fdate) %>% 
+#  mutate(fdate=year(fdate)) %>% 
+#  top_n(n = 50, wt = full_price) %>% 
+#  arrange(desc(full_price)) %>% view()
+#print(xtable(tab, type = "latex", booktabs = T, digits = 0),include.rownames=FALSE)
+```
+
+
+```{r}
+dat <- mss %>% 
+  mutate(age = round(as.numeric(difftime(date, birth_date, units = "days")/365.25))) %>% 
+  mutate(price = med_price)
+
+dat2 <- ms %>% 
+  mutate(age = round(as.numeric(difftime(date, birth_date, units = "days")/365.25))) %>% 
+  mutate(price = med_price) %>% 
+  mutate(price = if_else(is.na(price)| price<2,10,price))
+
+dat3 <- ms %>% 
+  mutate(age = round(as.numeric(difftime(date, birth_date, units = "days")/365.25))) %>% 
+  mutate(price = med_price) %>% 
+  mutate(price = if_else(is.na(price)| price<2,10,price)) %>% 
+  filter(substr(atc_code,1,1)=="L")
+
+m1 <- lm(log(price)    ~ gender + age, data = dat)
+m2 <- lm(log(price)    ~ gender + age + I(age^2), data = dat)
+m3 <- lm(log(price)    ~ gender + age + grp, data = dat)
+m4 <- lm(log(price)    ~ gender + age + I(age^2) + grp, data = dat)
+
+fm1 <- lmer(log(price) ~ gender + age +                  (1|IDNr), data = dat)
+fm2 <- lmer(log(price) ~ gender + age + I(age^2) +       (1|IDNr), data = dat)
+fm3 <- lmer(log(price) ~ gender + age + grp +            (1|IDNr), data = dat)
+fm4 <- lmer(log(price) ~ gender + age + I(age^2) + grp + (1|IDNr), data = dat)
+
+sfm3 <- lmer(log(price) ~ gender + age + grp +            (1|IDNr), data = dat3)
+
+#stargazer(m1,m3,fm1,fm3, sfm3, type="text")
+#stargazer(m1,m2,m3,m4, type="text")
+
+#stargazer(m1,m3,fm1,fm3, type = "latex",font.size="footnotesize",
+#          align=TRUE, no.space=TRUE, intercept.top=TRUE, intercept.bottom = F, df=F, model.numbers=FALSE,
+#          column.labels = c("Model1", "Model2","Model3","Model4"), 
+#          dep.var.labels = c("Cost of treatment"))
+
+stargazer(m1,m3,fm1,fm3,sfm3, type = "latex",font.size="footnotesize",
+          align=TRUE, no.space=TRUE, intercept.top=TRUE, intercept.bottom = F, df=F, model.numbers=FALSE,
+          column.labels = c("Model1", "Model2","Model3","Model4","Model5"), 
+          dep.var.labels = c("Cost of treatment"))
+```
+
+
+
+
+
+
+
+
+
+```{r}
+tab <- mss %>% 
+  group_by(grp) %>% 
+  summarize(sum=sum(med_price, na.rm=T)/1e6) %>% arrange(desc(sum))
+print(xtable(tab, type = "latex", booktabs = T, digits = 1),include.rownames=FALSE)
+```
+
+
+```{r}
+#dat <- mss %>% 
+#  mutate(age = round(as.numeric(difftime(date, birth_date, units = "days")/365.25)))
+#
+#m1 <- lm(price ~ gender +age, data = dat)
+#m2 <- lm(price ~ gender +age + I(age^2), data = dat)
+#m3 <- lm(price ~ gender + age + grp, data = dat)
+#m4 <- lm(price ~ gender + age + I(age^2) + grp, data = dat)
+#
+#stargazer(m1,m2,m3,m4, type = "latex",font.size="footnotesize",
+#          align=TRUE, no.space=TRUE, intercept.top=TRUE, intercept.bottom = F, df=F, model.numbers=FALSE,
+#          column.labels = c("Model1", "Model2","Model3","Model4"), 
+#          dep.var.labels = c("Cost of treatment")
+#)
+```
+
+
+```{r}
+dat <- mssg %>% mutate(price = med_price/1e3) %>% mutate(surv_y = surv/365.25)
+
+m1 <- lm(log(price) ~ gender + age,                                        data = dat)
+m2 <- lm(log(price) ~ gender + age + I(age^2) + ndiag + grp,               data = dat)
+m3 <- lm(log(price) ~ gender + age + ndiag  + surv_y + grp,                  data = dat)
+m4 <- lm(log(price) ~ gender + age + ndiag  + surv_y + ndrug + ntreat + grp, data = dat)
+m5 <- lm(log(price) ~ gender + age + ndiag  + surv_y + ndrug + ntreat + bmi +grp, data = dat)
+
+stargazer(m1,m2,m3,m4,m5, type = "latex",font.size="footnotesize",
+          align=TRUE, no.space=TRUE, intercept.top=TRUE, intercept.bottom = FALSE, df = FALSE, model.numbers=FALSE,
+          column.labels = c("M1", "M2","M3","M4","M5"), 
+          dep.var.labels = c("Cost of patient"))
+```
+
+```{r}
+
+dat <- mss %>% filter(firstdate<"2018-01-01") %>% 
+  filter(surv_day<=(365*2)) %>% 
+  group_by(IDNr) %>% 
+  summarize(price = sum(med_price), died = ifelse(first(surv)<(365*2),T,F)) %>% 
+  left_join(mssg) %>% 
+  mutate(surv_y = surv/365.25) %>% mutate(price=price/1e3)
+  
+
+m1 <- lm(log(price) ~ gender + age,                                        data = dat)
+m2 <- lm(log(price) ~ gender + age + grp,                                  data = dat)
+m3 <- lm(log(price) ~ gender + age + I(age^2) + ndiag + grp,               data = dat)
+m4 <- lm(log(price) ~ gender + age + ndiag + ndrug + ntreat + grp, data = dat)
+m5 <- lm(log(price) ~ gender + age + ndiag + ndrug + ntreat + bmi +grp, data = dat)
+
+stargazer(m1,m2,m3,m4,m5, type = "latex",font.size="footnotesize",
+          align=TRUE, no.space=TRUE, intercept.top=TRUE, intercept.bottom = FALSE, df = FALSE, model.numbers=FALSE,
+          column.labels = c("M1", "M2","M3","M4","M5"), 
+          dep.var.labels = c("Cost of patient"))
+```
+
+
+
+```{r}
+fun = function(x) {x*4362 + x^2*-43.27}
+optimize(interval=1:100, fun, maximum = T)
+
+fun = function(x) {x*3057.486 + x^2*-33.838}
+optimize(interval=1:100, fun, maximum = T)
+```
+
+
+
+```{r}
+gini <- function(x) {
+  n <- length(x)
+  x <- sort(x)
+  res <- 2 * sum(x * 1:n)/(n * sum(x)) - 1 - (1/n)
+  res <- n/(n - 1) * res
+  return(pmax(0, res))
+}
+
+gini_boot <- function(A, B, n = 100) {
+  vec <- vector()
+  for(i in 1:n) {
+      aa <- sample(A, replace = T)
+      bb <- sample(B, replace = T)
+      res <- gini(aa) - gini(bb)
+      vec[i] <- res
+  }
+  vec
+}
+
+p_gini <- function(a,b) {
+  gini_diff <- gini_boot(a, b)
+  gini_diff.under.H0 <- gini_diff - mean(gini_diff)
+  mean(abs(gini_diff.under.H0) > abs(gini_diff))
+}
+
+indx <- 2008:2019
+df <- map(indx, 
+          .f = function(x, data = mss) {
+                 d <- data %>% filter(.$year==x,
+                                      !(year%in%c(2015,2016,2017)&grp=="Breast")) %>% 
+                   group_by(IDNr, grp) %>% 
+                   summarize(price = sum(price))
+                 d$price
+                 })
+
+result <- array(0, dim = c(12,12))
+
+for(i in 1:11){ 
+  for(j in (i+1):12){ 
+    result[i,j] <- p_gini(df[[i]], df[[j]])
+    result[j,i] <- gini(df[[j]]) - gini(df[[i]])
+  }
+}
+res <- as.data.frame(round(result,2))
+names(res) <- indx
+rownames(res) <- indx
+res
+```
+
+
+
+
+
+
+
+
+```{r}
+dat <- mss %>% 
+  filter(med_price > 0) %>% 
+  select(IDNr, surv_day, med_price, event, surv, date) %>%
+  group_by(IDNr) %>% 
+  mutate(date = as.numeric(year(min(date)))) %>% 
+  ungroup %>% 
+  rename(id    = IDNr,
+         start = surv_day,
+         cost  = med_price,
+         delta = event) %>% 
+  mutate(stop  = start) %>% 
+  filter(!is.na(cost)) %>% 
+  filter(surv > 0) %>% 
+  filter(start < surv)
+
+
+t1 <- Sys.time()
+clist <- list()
+for (i in 1:12) {
+  clist[[i]] <- ccmean(dat, L = 365*i)
+}
+t2 <- Sys.time()
+t2-t1
+
+save(clist, file="generated_data/clist.rdata")
+load(file="generated_data/clist.rdata")
+
+
+est <- do.call(rbind.data.frame, lapply(clist, function(x) paste(x[[4]][1,])))
+names(est) <- c("AS","CC","BT","ZT")
+est <- est %>% 
+  mutate_all(.funs = ~as.numeric(as.character(.))) %>% 
+  mutate(year = row_number())%>% 
+  gather(variable, est, -year)
+
+se <- do.call(rbind.data.frame, lapply(clist, function(x) paste(x[[4]][3,])))
+names(se) <- c("AS","CC","BT","ZT")
+se <- se %>% 
+  mutate_all(.funs = ~as.numeric(as.character(.))) %>% 
+  mutate(year = row_number())%>% 
+  gather(variable, se, -year)
+
+tab <- full_join(est, se, by=c("year", "variable")) %>% 
+  mutate(name=paste0(round(est), 
+                    " (",
+                    round((est-(1.96*se))/1e3),
+                    "k-",
+                    round((est+(1.96*se))/1e3), 
+                          "k)")) %>% 
+  select(year, variable, name) %>% 
+  pivot_wider(names_from = variable, values_from = name)
+
+xtable(tab, type = "latex", booktabs = T, digits = 2)
+tab
+```
+
+
+
+
+
+
+```{r fig.height=4, fig.width=10}
+tab <- mssg %>% 
+  bind_rows(mssg %>% mutate(grp="Total")) %>% 
+  group_by(grp) %>% 
+  arrange(desc(med_price)) %>% 
+  mutate(pct = cumsum(med_price)/sum(med_price),
+         nn = round(row_number()/n()*100,1)) %>% 
+  group_by(grp) %>% 
+  mutate(type = case_when(abs(pct-0.50) == min(abs(pct-0.50)) ~ "50%",
+                          abs(pct-0.25) == min(abs(pct-0.25)) ~ "25%",
+                          abs(pct-0.75) == min(abs(pct-0.75)) ~ "75%",
+                          abs(pct-0.85) == min(abs(pct-0.85)) ~ "85%"
+                          )) %>% 
+  filter(!is.na(type)) %>% 
+  select(type, nn) %>% 
+  spread(key = type, value = nn) %>% 
+  arrange(match(grp, "Total"), .$"75%")
+
+tab
+  
+xtable(tab, type = "latex", booktabs = T, digits = 1)
+```
+
+
+```{r}
+tab <- mssg %>% 
+  group_by(diag1, grp) %>% 
+  summarize(n=n()) %>% 
+  filter(!is.na(n)) %>% 
+  arrange(desc(n)) %>% 
+  filter(n>4)
+tab
+print(xtable(tab, type = "latex", booktabs = T, digits = 2), file = "tab3.tex")
+```
+
+
+```{r}
+tab <- mss %>% 
+  filter(event == 1) %>% 
+  mutate(untill = surv-surv_day) %>% 
+  group_by(grp) %>%
+  summarize("30 days"  = round(sum(price[untill<30]) /sum(price)*100,1),
+            "60 days"  = round(sum(price[untill<60]) /sum(price)*100,1),
+            "90 days"  = round(sum(price[untill<90]) /sum(price)*100,1),
+            "120 days" = round(sum(price[untill<120])/sum(price)*100,1),
+            "360 days" = round(sum(price[untill<360])/sum(price)*100,1),
+            mean = mean(round(price[untill<90])),
+            sd = sd(round(price[untill<90])))
+
+xtable(tab, type = "latex", booktabs = T, digits = 2)
+tab
+```
+
+
+
+
+
+
+
+
+```{r}
+a <- mss %>% 
+  group_by(moname) %>% 
+  summarize(sum = round(sum(tprice, na.rm=T)/1e6,1),
+            "2008-2017" = round(mean(tprice, na.rm=T))) %>% 
+  top_n(wt=sum, 20)
+
+tab <- mss %>% 
+  group_by(moname, year) %>% 
+  summarize(mm = round(mean(tprice, na.rm=T))) %>% 
+  filter(moname %in% a$moname) %>%
+  filter(year%in% c(2008, 2013, 2017)) %>% 
+  spread(key=year, value=mm) %>% 
+  ungroup() %>% 
+  full_join(a, by="moname") %>% arrange(desc(sum)) %>% 
+  select(sum, everything())
+
+
+
+xtable(tab, type = "latex", booktabs = T, digits = 0)
+tab
+```
+
+
+```{r}
+tab <- mssg %>% 
+  mutate(cn = if_else(event==1, "Dead","Censored")) %>% 
+  group_by(grp, cn) %>% 
+  summarize(m=sum(price), sv = sum(surv/365)) %>% 
+  mutate(pyr = m/sv) %>% 
+  select(-m, -sv) %>% 
+    pivot_wider(names_from = cn, values_from = pyr)
+
+xtable(tab, type = "latex", booktabs = T, digits = 0)
+tab
+
+
+```
+
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+msst <- mssg %>%
+  mutate(cost = if_else(price>500000, "High","low"))
+
+stab <- rbind(msst, msst %>% mutate(cost = "Total"))
+
+base <- stab %>% 
+  group_by(cost) %>% 
+  summarise("Total"                       = n(),
+            "Male"                        = sum(gender == "M",           na.rm = T),
+            "Female"                      = sum(gender == "K",           na.rm = T),
+            "BMI < 18.5"                  = sum(bmi < 18.5,              na.rm = T),
+            "BMI 18.5-25"                 = sum(bmi > 18.5 & bmi < 25,   na.rm = T),
+            "BMI > 25"                    = sum(bmi > 25,                na.rm = T),
+            "BMI NA"                      = sum(is.na(bmi)),
+            "Age >= 65"                   = sum(age >= 65,               na.rm = T),
+            "Age < 65"                    = sum(age < 65,                na.rm = T),
+            "Diag = 1"                    = sum(ndiag == 1,              na.rm = T),
+            "Diag = 2"                    = sum(ndiag == 2,              na.rm = T),
+            "Diag > 2"                    = sum(ndiag > 2,               na.rm = T),
+            "Breast"                      = sum(grp == "Breast",         na.rm = T),
+            "Lung"                        = sum(grp == "Lung",           na.rm = T),
+            "Colon"                       = sum(grp == "Colon",          na.rm = T),
+            "Rectum"                      = sum(grp == "Rectum",         na.rm = T),
+            "Pancreas"                    = sum(grp == "Pancreas",       na.rm = T),
+            "Ovary"                       = sum(grp == "Ovary",          na.rm = T),
+            "Prostate"                    = sum(grp == "Prostate",       na.rm = T),
+            "Stomach"                     = sum(grp == "Stomach",        na.rm = T),
+            "Brain"                       = sum(grp == "Brain",          na.rm = T),
+            "Other"                       = sum(grp == "Other",          na.rm = T),
+            "Drug 1-5"                    = sum(ndrug <= 5,              na.rm = T),
+            "Drug 5-10"                   = sum(ndrug >= 6 & ndrug <=10, na.rm = T),
+            "Drug 10+"                    = sum(ndrug >10,               na.rm = T),
+            "treat 1-50"                  = sum(ntreat <= 50,            na.rm = T),
+            "treat 50-100"                = sum(ntreat >= 51 & ntreat <=100, na.rm = T),
+            "treat 100+"                  = sum(ntreat > 100,            na.rm = T),
+            "year 08-11"                  = sum(year(fdate) <= 2011,     na.rm = T),
+            "year 12-15"                  = sum(year(fdate) >= 2012 & ntreat <=2015, na.rm = T),
+            "year 16-19"                  = sum(year(fdate) >= 2016,     na.rm = T)
+            ) %>% t()
+
+pct <- stab %>% 
+  group_by(cost) %>% 
+  summarise("Total"                       = round(n()/10000,1),
+            "Male"                        = round(sum(gender == "M",           na.rm = T) /n() * 100, 1),
+            "Female"                      = round(sum(gender == "K",           na.rm = T) /n() * 100, 1),
+            "BMI < 18.5"                  = round(sum(bmi < 18.5,              na.rm = T) /n() * 100, 1),
+            "BMI 18.5-25"                 = round(sum(bmi > 18.5 & bmi < 25,   na.rm = T) /n() * 100, 1),
+            "BMI > 25"                    = round(sum(bmi > 25,                na.rm = T) /n() * 100, 1),
+            "BMI NA"                      = round(sum(is.na(bmi))                         /n() * 100, 1),
+            "Age >= 65"                   = round(sum(age >= 65,               na.rm = T) /n() * 100, 1),
+            "Age < 65"                    = round(sum(age < 65,                na.rm = T) /n() * 100, 1),
+            "Diag = 1"                    = round(sum(ndiag == 1,              na.rm = T) /n() * 100, 1),
+            "Diag = 2"                    = round(sum(ndiag == 2 ,             na.rm = T) /n() * 100, 1),
+            "Diag > 2"                    = round(sum(ndiag > 2,               na.rm = T) /n() * 100, 1),
+            "Breast"                      = round(sum(grp == "Breast",         na.rm = T) /n() * 100, 1),
+            "Lung"                        = round(sum(grp == "Lung",           na.rm = T) /n() * 100, 1),
+            "Colon"                       = round(sum(grp == "Colon",          na.rm = T) /n() * 100, 1),
+            "Rectum"                      = round(sum(grp == "Rectum",         na.rm = T) /n() * 100, 1),
+            "Pancreas"                    = round(sum(grp == "Pancreas",       na.rm = T) /n() * 100, 1),
+            "Ovary"                       = round(sum(grp == "Ovary",          na.rm = T) /n() * 100, 1),
+            "Prostate"                    = round(sum(grp == "Prostate",       na.rm = T) /n() * 100, 1),
+            "Stomach"                     = round(sum(grp == "Stomach",        na.rm = T) /n() * 100, 1),
+            "Brain"                       = round(sum(grp == "Brain",          na.rm = T) /n() * 100, 1),
+            "Other"                       = round(sum(grp == "Other",          na.rm = T) /n() * 100, 1),
+            "Drug 1-5"                    = round(sum(ndrug <= 5,              na.rm = T) /n() * 100, 1),
+            "Drug 5-10"                   = round(sum(ndrug >= 6 & ndrug <=10, na.rm = T) /n() * 100, 1),
+            "Drug 10+"                    = round(sum(ndrug >10,               na.rm = T) /n() * 100, 1),
+            "treat 1-50"                  = round(sum(ntreat <= 50,            na.rm = T) /n() * 100, 1),
+            "treat 50-100"                = round(sum(ntreat >= 51 & ntreat <=100, na.rm = T) /n() * 100, 1),
+            "treat 100+"                  = round(sum(ntreat > 100,            na.rm = T) /n() * 100, 1),
+            "year 08-11"                  = round(sum(year(fdate) <= 2011,     na.rm = T) /n() * 100, 1),
+            "year 12-15"                  = round(sum(year(fdate) >= 2012 & ntreat <=2015, na.rm = T) /n() * 100, 1),
+            "year 16-19"                  = round(sum(year(fdate) >= 2016,     na.rm = T) /n() * 100, 1)
+            ) %>% t() 
+
+base_1 <- base %>% as_tibble() %>% mutate(name = rownames(base))
+pct_1  <- pct %>% as_tibble() %>% mutate(name = rownames(pct))
+
+aa <- full_join(base_1, pct_1, by = "name") %>% 
+  rename("Name"       = name,
+         "Low-cost"   = V2.x,
+         "pct"        = V2.y,
+         "High-cost"  = V1.x,
+         "pct "       = V1.y,
+         "Total"      = V3.x,
+         "pct  "      = V3.y) %>% 
+  select("Name","Low-cost","pct","High-cost","pct ","Total","pct  ") %>% 
+  slice(-1)
+aa
+
+t1 <- chisq.test(table(msst$gender,       msst$cost))
+t2 <- chisq.test(table(msst$age>=65,      msst$cost))
+t3 <- chisq.test(table(msst$bmi>25,       msst$cost))
+t4 <- chisq.test(table(msst$grp,          msst$cost))
+t5 <- chisq.test(table(cut(msst$ndiag, breaks = c(0,1,2,9)),        msst$cost))
+t6 <- chisq.test(table(cut(msst$ndrug, breaks = c(0,5,10,99)),        msst$cost))
+t7 <- chisq.test(table(cut(msst$ntreat, breaks = c(0,50,100,999)),       msst$cost))
+t8 <- chisq.test(table(cut(year(msst$fdate), breaks = c(2000,2011,2015,2020)),  msst$cost))
+
+df <- rbind(
+      c("gender",     round(t1$p.value, 4)),
+      c("bmi",        round(t3$p.value, 4)),
+      c("age",        round(t2$p.value, 4)),
+      c("ndiag",      round(t5$p.value, 4)),
+      c("grp",        round(t4$p.value, 4)),
+      c("ndrug",        round(t6$p.value, 4)),
+      c("ntreat",        round(t7$p.value, 4)),
+      c("year(msst$fdate)",        round(t8$p.value, 4))
+      )
+
+aa$pp <- c(NA, 
+           rep(df[1,2],2),
+           rep(df[2,2],4),
+           rep(df[3,2],2),
+           rep(df[4,2],3),
+           rep(df[5,2],10),
+           rep(df[6,2],3),
+           rep(df[7,2],3),
+           rep(df[8,2],3))
+
+names(aa) <- c("Name", "N", "Pct", "N", "Pct", "N", "Pct", "Chi-square P-value")
+
+aa$Group <- c("Total", 
+              rep("Gender",2),
+              rep("Body Mass Index",4),
+              rep("Age",2),
+              rep("Number of diagnoses",3),
+              rep("Diagnose",10),
+              rep("Number of drugs",3),
+              rep("Number of treatments",3),
+              rep("First treatment",3))
+
+aa <- aa[,c(9,1:8)]
+aa$"Chi-square P-value" <- ifelse(aa$"Chi-square P-value" < 0.001, paste("<0.001"), format(aa$"Chi-square P-value", nsmall=4))
+
+print(aa, n=50)
+
+a <- kable(aa, "latex", booktabs = T) %>%
+  kable_styling(bootstrap_options = c("condensed"), font_size = 11, full_width = F) %>% 
+  add_header_above(c(" "=2, "Low-cost" = 2, "High-cost" = 2, "Total" = 2, " " = 1)) %>% 
+  collapse_rows(columns = c(1,9), valign = "top")
+## print a in console
+
+chisq.test(table(cut(year(msst$fdate), breaks = c(2000,2011,2015,2020)),  msst$cost))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

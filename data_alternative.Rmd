@@ -1,0 +1,520 @@
+---
+title: "Makroanalyse medicinpriser"
+author: "Lars Børty"
+date: "14/9/2019"
+output:
+  html_document:
+    code_folding: hide
+    theme: flatly
+    toc: yes
+    toc_float:
+      collapsed: no
+---
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(eurostat)
+library(RColorBrewer)
+library(sf)
+library(OECD)
+library(patchwork)
+#library(extrafont)
+library(scales)
+library(statsDK)
+library(zoo)
+library(wbstats)
+
+CO <- c("UK","DK","NO","SE","DE","FR","NL")
+acode <- c("DNK","GBR","NOR","SWE", "NLD","USA","DEU", "FRA")
+
+ppal <- colorRampPalette(brewer.pal(4, "Paired"))
+base1 <- brewer.pal(4, "Paired")[1]
+base2 <- brewer.pal(4, "Paired")[2]
+palblue <- colorRampPalette(brewer.pal(1, "Paired"))
+ppal <- colorRampPalette(brewer.pal(4, "Paired"))
+
+th <- theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+th2 <- theme_minimal() + 
+  theme(panel.grid.major.y = element_blank(), panel.grid.minor = element_blank())
+
+th1 <- theme_minimal() + 
+  theme(panel.grid.major.x = element_blank(), panel.grid.minor = element_blank())
+```
+
+
+
+```{r fig.height=3, fig.width=12}
+hf    <- get_eurostat("hlth_sha11_hf", filters = list(unit = "PC_GDP"))
+
+al1 <- hf %>% filter(icha11_hf == "TOT_HF",
+              time == "2017-01-01",
+              !is.na(values)) %>% 
+  ggplot(aes(reorder(geo, values), values, fill = geo == "DK")) + 
+  geom_col(show.legend = F, width=0.8) + 
+  scale_fill_brewer(palette="Paired") +
+  scale_y_continuous(breaks=seq(0,12,3),label = unit_format(unit = "%", sep = "", accuracy = 1)) +
+  labs(title=NULL, x=NULL, y="GDP", caption = "Source: Eurostat") +
+  theme_minimal() + 
+  theme(panel.grid.major.x = element_blank(), panel.grid.minor = element_blank())
+al1   
+```
+
+
+```{r fig.height=3, fig.width=8}
+#Område	Sygehusenes udgifter, mia. kr. 
+df <- matrix(c(
+"Kræft", 9.6,
+"Psykiatrien",8.7,
+"Kredsløbssygdomme",6.8,
+"Sygdomme i knogler,\nmuskler og bindevæv",5.5,
+"Åndedrætssygdomme",5.1,
+"Sygdomme i fordøjelsesorganer",4.3,
+"Symptomer og abnorme fund",4.0,
+"Læsioner,forgiftninger og andre\nfølger af ydre påvirkninger",5,  
+"Sygdomme i urin- og\nkønsorganer",3.2,
+"Sygdomme i nervesystemet",2.4,    
+"Sygdomme i øje, øjenomgivelser,\nøre og processus mastoideus", 2.1,    
+"Endokrine sygdomme",1.9,    
+"Kræft/sygdomme i blod og\nbloddannende organer",1.8    
+#"Infektiøse og parasitære\nsygdomme",1.6,    
+#"Sygdomme i hud og underhud",1.0
+  ), nrow=2) %>% 
+  as_tibble() %>% 
+  set_names(.[1,])
+
+df <- df[-1,]
+df <- df %>% rowid_to_column("ID")
+al2 <- df %>% 
+  gather(variable, value,-ID) %>% 
+  mutate(value=as.numeric(value)) %>% 
+  ggplot(aes(reorder(variable, value), value)) + 
+  geom_col() + 
+  geom_text(aes(label=format(value,digits = 2), y=value-0.1), color="white", fontface = "bold", hjust = "right", size=3) +
+  coord_flip(ylim=c(0.4,10)) +
+  scale_y_continuous(breaks=seq(0,10,2),label = unit_format(unit = "b", sep = "", accuracy = 1)) +
+  labs(x=NULL, y=NULL, caption="Source: Berlinske medier") + th2 +
+  theme(axis.text = element_text(size=6))
+al2
+```
+
+
+
+```{r fig.height=3, fig.width=12}
+dstruc <- get_data_structure("SHA")
+str(dstruc, max.level = 1)
+filter_list <- list(c("HF11","HF121","HF122","HF2","HF3"),"HCTOT", "HPTOT","PARPIB")
+df <- get_dataset(dataset = "SHA", filter = filter_list)
+
+first_years <- df %>% 
+  mutate(obsTime=as.numeric(obsTime)) %>% 
+  group_by(HF, LOCATION) %>%
+               summarise(obsTime = min(obsTime) - 1) %>%
+               filter(obsTime > 1974) %>%
+               mutate(obsValue = 0)
+
+al4 <- df %>% 
+  mutate(obsTime = as.numeric(obsTime)) %>% 
+  bind_rows(first_years) %>% 
+  filter(LOCATION %in% c("DNK","DEU","USA","NLD","NOR","SWE","FRA","GBR")) %>% 
+  filter(between(obsTime, 2000, 2017)) %>% 
+  mutate(date = as.Date(paste0(obsTime,"-01-01"))) %>% 
+  ggplot(aes(date, obsValue, fill=HF)) + geom_area() + 
+  facet_wrap(~LOCATION, nrow=1, scales = "free_x") + 
+  scale_y_continuous(breaks=c(seq(0,16, by=4)),label = unit_format(unit = "%", sep = "", accuracy = 1)) +
+  scale_fill_manual("Sourceof funding",values=palblue(5), 
+                    labels = c("Government\nschemes", 
+                               "Social health insurance\nschemes",
+                               "Compulsory private\ninsurance scheme", 
+                               "Voluntary health care\npayment schemes",
+                               "Household out-of-pocket\npayment")) + 
+  scale_x_date(date_breaks = "3 years",date_labels = "%y") +
+  labs(title=NULL, caption = "Source: OECD - SHA", x=NULL, y="GDP") + 
+  theme(legend.key.height=unit(2,"line")) +th
+al4
+```
+
+
+
+
+```{r fig.height=5, fig.width=12}
+load("generated_data/sitc_5417.rdata")
+
+df <- sitc_5417 %>% group_by(year, location_code) %>% 
+  summarize(Import = sum(import_value),
+            Export = sum(export_value)) %>% 
+  mutate(coef = Export/Import)
+
+# title="Fraction of export to import of SITC-5417 ~ Medicaments, also known as antibiotics, hormones and alkaloids"
+
+p1 <- df %>% 
+  ungroup() %>% 
+  mutate(year = as.Date(paste0(year,"-01-01"))) %>% 
+  ggplot(aes(year, coef)) + 
+  geom_line(show.legend = F) +
+  geom_ribbon(aes(ymin=0, ymax=coef), alpha=0.3, show.legend = F)+
+  facet_wrap(~location_code, nrow=1) + 
+  scale_x_date(date_breaks = "3 years",date_labels = "%Y") +
+  labs(title=NULL, y="Fraction",x=NULL) + 
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) + th
+
+p2 <- df %>% 
+  ungroup() %>% 
+  mutate(year = as.Date(paste0(year,"-01-01"))) %>% 
+  gather(variable, value, -year, -location_code, -coef) %>% 
+  ggplot(aes(year, value/1e9, linetype=variable)) + 
+  geom_line(show.legend = T) +
+  facet_wrap(~location_code, nrow=1) + 
+  scale_y_continuous(breaks=c(seq(0,60, by=20)),label = unit_format(unit = "b", sep = "")) +
+  scale_x_date(date_breaks = "3 years",date_labels = "%y") +
+  labs(title=NULL, 
+       caption = "Source: Harvard - Dataverse", y="USD",x=NULL, linetype="Type") + th
+
+al5 <- p1 + p2 + plot_layout(nrow=2, guides = "collect")
+```
+
+
+
+```{r fig.height=4.3, fig.width=11}
+pop_data <- wb(indicator = "SP.POP.TOTL", startdate = 1995, enddate = 2017)
+
+pop <- pop_data %>% 
+  as_tibble() %>% 
+  filter(iso3c %in% acode) %>%
+  mutate(year=as.numeric(date),
+         location_code = iso3c,
+         pop = value) %>% 
+  select(location_code, year, pop)
+
+hs <- data.frame()
+for (year in 1995:2017) {
+  load(paste0("external_data/trade/hs/country_partner_hsproduct4digit_year_", year, ".rdata"))
+  hs <- rbind(hs, subset(table, location_code %in% acode))
+}
+
+sitc <- data.frame()
+for (year in 1995:2017) {
+  load(paste0("external_data/trade/sitc/country_partner_sitcproduct4digit_year_", year, ".rdata"))
+  sitc <- rbind(sitc, subset(table, location_code %in% acode))
+}
+rm(table, year)
+
+hs1 <- hs %>% filter(hs_product_code == "3004") %>% 
+  group_by(year, location_code) %>% 
+  summarize(export = sum(export_value)/1e9,
+            import = sum(import_value)/1e9) %>% 
+  mutate(coef = export/import)  %>% 
+  gather(variable, value, -coef,-year, -location_code) %>% 
+  mutate(type = "HS-3004")
+
+sitc1 <- sitc %>% filter(sitc_product_code == "5417") %>% 
+  group_by(year, location_code) %>% 
+  summarize(export = sum(export_value)/1e9,
+            import = sum(import_value)/1e9) %>% 
+  mutate(coef = export/import) %>%
+  gather(variable, value, -coef,-year, -location_code) %>% 
+  mutate(type = "SITC-5417")
+
+data <- rbind(hs1, sitc1) %>% 
+  mutate(yeard = as.Date(paste0(year,"-01-01")))
+
+d1 <- data %>% 
+  filter(type=="HS-3004") %>% 
+  group_by(location_code) %>% 
+  summarize(mcoef = mean(coef))
+
+d2 <- data %>% 
+  filter(type=="HS-3004") %>% 
+  pivot_wider(names_from = variable, values_from = value) %>% 
+  group_by(location_code) %>% 
+  summarize(total = sum(export)-sum(import))
+
+
+data <- data %>% 
+  left_join(d1, by="location_code") %>% 
+  left_join(d2, by="location_code") %>% 
+  left_join(pop, by=c("location_code", "year")) %>% 
+  mutate(name = paste(location_code, round(mcoef,2))) %>% 
+  mutate(name2 = paste(location_code, round(total,2))) %>% 
+  group_by(location_code) %>% 
+  mutate(name3 = paste(location_code, round(max(pop)/1e6,1)))
+
+p1 <- data %>% 
+  ggplot(aes(yeard, coef, linetype=type)) + 
+  geom_hline(aes(yintercept=1), color="white")+
+  geom_line(size=0.3,show.legend = F) + 
+  facet_wrap(~reorder(name, -mcoef), nrow=1) + 
+  scale_x_date(breaks = as.Date(c("1995-01-01","2000-01-01","2005-01-01","2010-01-01","2015-01-01")), date_labels = "%y") +
+  labs(x=NULL, y="Ratio", linetype="Product Code", caption="Source: Harvard Dataverse")
+
+p2 <- data %>% 
+  ggplot(aes(yeard, value, color=variable, linetype=type)) + 
+  geom_hline(aes(yintercept=1), color="white")+
+  geom_line(size=0.3) + 
+  facet_wrap(~reorder(name2, -mcoef), nrow=1) + 
+  scale_color_brewer(palette="Paired") + 
+  scale_x_date(breaks = as.Date(c("1995-01-01","2000-01-01","2005-01-01","2010-01-01","2015-01-01")), date_labels = "%y") +
+  scale_y_continuous(breaks=c(seq(0,60, by=20)),label = unit_format(unit = "b", sep = "")) +
+  labs(x=NULL, y="Absolute value USD", color="Direction        ", linetype="Product Code")
+
+p3 <- data %>% 
+  filter(type=="HS-3004") %>% 
+  pivot_wider(names_from = variable, values_from = value) %>% 
+  mutate(netpc = ((export-import)/pop)*1e9) %>% 
+  ggplot(aes(yeard, netpc, linetype=type)) + 
+  geom_hline(aes(yintercept=0), color="white")+
+  geom_area(size=0.3, show.legend = F, alpha=0.4, color="grey40") + 
+  facet_wrap(~reorder(name3, -mcoef), nrow=1) + 
+  scale_x_date(breaks = as.Date(c("1995-01-01","2000-01-01","2005-01-01","2010-01-01","2015-01-01")), date_labels = "%y") +
+  scale_y_continuous(breaks=c(seq(0,2500, by=500)),label = unit_format(unit = "k", sep = "")) +
+  labs(x=NULL, y="Net Export per capita in USD", caption="Source: Harvard Dataverse")
+
+al10 <- p2 + p1 + plot_layout(nrow=2, guides = "collect") & th
+al10
+```
+
+
+```{r fig.height=3, fig.width=7}
+al11 <- data %>% 
+  filter(type=="HS-3004") %>%
+  filter(location_code=="DNK") %>% 
+  pivot_wider(names_from = variable, values_from = value) %>% 
+  mutate(netpc = ((export-import)/pop)*1e9) %>% 
+  ggplot(aes(yeard, netpc, linetype=type)) + 
+  geom_point(shape=22) +
+  geom_hline(aes(yintercept=0), color="white")+
+  geom_area(size=0.3, show.legend = F, alpha=0.2, color="grey40") + 
+  #facet_wrap(~reorder(name3, -mcoef), nrow=1) + 
+  scale_x_date(date_breaks = "1 years", date_labels = "%y", limits=as.Date(c("1995-01-01","2017-01-01")))+
+  scale_y_continuous(breaks=c(seq(0,2500, by=400))) +
+  coord_cartesian(xlim=as.Date(c("1995-06-01","2016-06-01")), ylim=c(70,2100))+
+  labs(x=NULL, y="Net Export per capita in USD", caption="Source: Harvard Dataverse + World Bank ~ SP.POP.TOTL") + th1
+al11
+```
+
+
+
+```{r fig.height=4, fig.width=10}
+NORD_M <- read_delim("external_data/nordcan/NORDCAN_T4_25012902.txt", 
+    "\t", escape_double = FALSE, trim_ws = TRUE, skip = 2)
+
+NORD_F <- read_delim("external_data/nordcan/NORDCAN_T4_62970336.txt", 
+    "\t", escape_double = FALSE, trim_ws = TRUE, skip = 2)
+
+NORD <- rbind(NORD_M[3,3:20], NORD_F[3,3:20])
+NORD$Gender <- c("Male","Female")
+
+save(NORD, file = "generated_data/NORD.rdata")
+
+p1 <- NORD %>% gather(variable, value, -Gender) %>%
+  mutate(variable = factor(variable, levels = names(NORD))) %>% 
+  ggplot(aes(variable, value/1e3, fill=Gender)) + 
+  geom_col(position="dodge", width=0.6) + 
+  scale_y_continuous(breaks=c(seq(0,60, by=10)),label = unit_format(unit = "k", sep = "")) +
+  scale_fill_brewer(palette="Paired") + 
+  labs(x="Age", y=NULL, fill="Incidence") + 
+  #facet_wrap(~"New incidences of cancer Denmark\n1996 - 2016") + 
+  th1
+
+
+NORD_P <- read_delim("external_data/nordcan/NORDCAN_T11_22890785.txt", 
+    "\t", escape_double = FALSE, trim_ws = TRUE, skip = 2)
+names(NORD_P) <- c("year","1yr","1yr_F","3yr","3yr_F","5yr","5yr_F","10yr","10yr_F","Total")
+
+p2 <- NORD_P %>% select(!ends_with("_F")) %>% 
+  gather(variable, value, -year) %>% 
+  ggplot(aes(year, value/1e3, color=reorder(variable,desc(value)))) + 
+  geom_line() + 
+  scale_color_manual(values=palblue(7)[1:5]) + 
+  scale_y_continuous(limits=c(0,310), breaks=c(0,75,150,225,300),label = unit_format(unit = "k", sep = ""))+
+  labs(x=NULL, y=NULL, color="Prevalence", caption="Source: NORDCAN") + th1
+
+al6 <- p1 + p2 + plot_layout(width=c(1.25,0.8))
+al6
+```
+
+
+
+
+
+```{r fig.height=3, fig.width=12}
+b <- sdk_get_variables(sdk_retrieve_metadata("FRDK118"))
+data_B <- sdk_retrieve_data("FRDK118")
+data_B$TID2 <- as.Date(as.yearqtr(data_B$TID, format = "%Y"))
+data_B <- subset(data_B, data_B$TID2 != "2018-01-01")
+data_B$ALDER2 <- as.numeric(gsub("([0-9]+).*$", "\\1", data_B$ALDER))
+data_B <- subset(data_B, data_B$ALDER != "Total")
+
+data <- data_B %>% group_by(ALDER2,TID) %>% 
+  summarize(sum=sum(INDHOLD)) %>% 
+  filter(TID %in% c(2019,2030,2040,2050,2060))
+data_g <- data_B %>% group_by(ALDER2,TID) %>% 
+  summarize(sum=sum(INDHOLD)) %>% 
+  filter(TID %in% c(2019,2030,2040,2050,2060)) %>% 
+  group_by(ALDER2) %>% 
+  mutate(sum = sum[TID==2019])
+
+al7 <- ggplot(data = data) + 
+  geom_bar(aes(ALDER2, sum/1e3),
+           fill = base1,
+           color = base1,
+           alpha = 0.7,
+           width = 1,
+           stat = "identity", 
+           position = "dodge") +
+  geom_bar(data = data_g,
+           aes(ALDER2, sum/1e3, fill = "2019", color = "2019"), 
+           alpha = 0.7,
+           width = 1,
+           stat = "identity", 
+           position = "dodge") +
+  scale_fill_manual("Base\nyear", values = base2) +
+  scale_color_manual("Base\nyear", values = base2) +
+  scale_x_continuous(limits = c(59, 105), 
+                     breaks = round(seq(min(0), max(120), by = 10),1)) +
+  scale_y_continuous(limits = c(0, 85), 
+                     breaks = c(0,15,30,45,60,75),
+                     label = unit_format(unit = "k", sep = "")) +
+  labs(x = "Age", caption = "Source: Statistics Denmark - FRDK118", y="n") + 
+  th1 + 
+  facet_wrap(~TID, nrow=1)
+al7
+```
+
+
+```{r fig.height=3, fig.width=5}
+b <- sdk_get_variables(sdk_retrieve_metadata("HISB9"))
+data <- sdk_retrieve_data("HISB9")
+
+al8 <- data %>% 
+  filter(TAVLE=="Average life expectancy (year)") %>% 
+  filter(TID == "2015:2019") %>% view()
+  mutate(alder=extract_numeric(ALDER),
+         "Years\nlived"=extract_numeric(ALDER),
+         "Average life\nexpectancy"=INDHOLD/100) %>% 
+  gather(variable, value, -TID, -TAVLE, -ALDER, -alder, -KØN, -INDHOLD) %>%
+  group_by(alder, variable) %>% 
+  summarize(value=mean(value)) %>% 
+  ggplot(aes(alder, value, fill=variable, color=variable)) + 
+  labs(y=NULL, x=NULL, caption = "Source: Statistics Denmark - HISB9", cill=NULL, color=NULL)+
+  geom_col(width=1.05, alpha=0.5, size=0.8) + 
+  #geom_segment(aes(y=0, yend=88, x=65,xend=65), linetype="dashed", size=0.3, show.legend = F, inherit.aes = F)+
+  #geom_text(x=65, y=93, label="65", check_overlap = T, show.legend = F, inherit.aes = F) +
+  scale_x_continuous(breaks=seq(0,100,10)) +
+  scale_fill_brewer("",palette="Paired") +
+  scale_color_brewer("",palette="Paired") +
+  th1 +
+  coord_cartesian(ylim=c(4,100))+
+  theme(legend.key.height=unit(2,"line"),
+        legend.key.width=unit(0.7,"line")) + 
+  theme(legend.position=c(0.8, 0.3),
+        legend.background = element_rect(fill="white", color=NA),
+        legend.title=element_blank())
+al8
+```
+
+```{r fig.height=5, fig.width=12}
+library(scales)
+library(sf)
+library(tidyverse)
+library(statsDK)
+
+geo_sf <- read_sf("https://dawa.aws.dk/regioner/?format=geojson")
+geo_sf2 <- read_sf("https://dawa.aws.dk/kommuner/?format=geojson")
+
+
+FOLK <- sdk_retrieve_data("FOLK1A", CIVILSTAND="TOT", 
+                                ALDER = "IALT", 
+                                Tid = "2019K1", 
+                                KØN="TOT")
+FOLK[,c(1:4)] <- NULL
+names(FOLK) <- c("navn", "value")
+
+hos <- tibble(lat=c(56.957272,57.038259,57.451931), 
+              lon=c(8.696723,9.907204, 9.998137))
+
+geo_sf <- rmapshaper::ms_simplify(input = as(geo_sf, 'Spatial')) %>%
+  st_as_sf()
+
+geo_sf2 <- rmapshaper::ms_simplify(input = as(geo_sf2, 'Spatial')) %>%
+  st_as_sf()
+
+
+p1 <- FOLK %>% 
+  filter(str_detect(navn, "Region")) %>% 
+  mutate(value=(value/sum(value))*100) %>% 
+  left_join(geo_sf, ., by = "navn") %>% 
+  ggplot() + 
+  geom_sf(aes(fill = as.factor(navn)), color="white", size=0.1) + 
+  geom_text(aes(label=paste0(round(value,1),"%"), x=visueltcenter_x, y=visueltcenter_y), color="white", size=3) +
+  scale_fill_manual(values=palblue(5))+
+  labs(x=NULL, y=NULL, fill=NULL) +
+  theme_void() + theme(legend.position = c(0.8, 0.8))
+
+p2 <- FOLK %>% 
+  filter(!str_detect(navn, "All Denmark|Region")) %>% 
+  left_join(geo_sf2 %>% filter(regionskode==1081), ., by = "navn") %>% 
+  ggplot() + 
+  geom_sf(color="white", size=0.1, show.legend = F, fill="grey30") + 
+  geom_point(data=hos,aes(x=lon, y=lat), color=base2, shape=18, size=4) +
+  geom_point(data=hos,aes(x=lon, y=lat), color=base1, shape=18, size=2) +
+  geom_text(aes(label=paste0(round(value/1e3,1),"k"), x=visueltcenter_x, y=visueltcenter_y), color="white", size=3) +
+  labs(x=NULL, y=NULL, fill=NULL, caption="Source: DAWA + DST ~ FOLK1A") +
+  theme_void()
+
+
+
+
+al9 <- p1 + p2 + plot_layout(nrow=1)
+al9
+```
+
+
+
+
+
+
+
+```{r}  
+ggsave(al1, file="plots/al1.pdf",   height = 2, width = 10, dpi = 600)
+ggsave(al2, file="plots/al2.pdf",   height = 3, width = 8,dpi = 600)
+ggsave(al4, file="plots/al4.pdf",   height = 3, width = 12, dpi = 600)
+ggsave(al5, file="plots/al5.pdf",   height = 4, width = 10, dpi = 600)
+ggsave(al6, file="plots/al6.pdf",   height = 4, width = 10, dpi = 600)
+ggsave(al7, file="plots/al7.pdf",   height = 3, width = 10, dpi = 600)
+ggsave(al8, file="plots/al8.pdf",   height = 3, width = 5,  dpi = 600)
+ggsave(al9, file="plots/al9.pdf",   height = 5, width = 12, dpi = 600)
+ggsave(al10, file="plots/al10.pdf", height = 4, width = 10, dpi = 600)
+ggsave(al11, file="plots/al11.pdf", height = 3, width = 7,  dpi = 600)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
